@@ -1,0 +1,11 @@
+{ 
+    "HTTP_preFix"        : "https",
+    "LogDirectory"       : "\\Logs\\",
+    "DumpDirectory"      : "\\RawData\\",
+    "SecurityDir"        : "\\Security\\",
+    "GroupFileName"      : "Permissions.json",
+    "MembershipFileName" : "Membership.json",
+    "rawDataFile"        : "rawdump.txt",
+    "Namespaces"         : ["AuditLog","BuildAdministration","Collection","Process","Workspaces","VersionControlPrivileges","Server","Project","Tagging","VersionControlItems","AnalyticsViews","Build","CSS","DashboardsPrivileges","Git Repositories","Iteration","MetaTask","Plan","ReleaseManagement","WorkItemQueryFolders","DistributedTask","Environment","Library","ServiceEndpoints","AccountAdminSecurity","Analytics","BlobStoreBlobPrivileges","BoardsExternalIntegration","Discussion Threads","EventSubscriber","Identity","ServiceHooks","WorkItemTrackingAdministration"]
+}
+
