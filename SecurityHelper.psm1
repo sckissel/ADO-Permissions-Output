@@ -1436,11 +1436,34 @@ Function Get-PermissionsByNamespace()
                         Write-Host "GroupName: $ug"                        
                     }
                 } elseif ($_.value.descriptor -like "Microsoft.TeamFoundation.ServiceIdentity*") {
-                    $currentUser = $allSvcUsers | Where-Object { $_.FullDescriptor -eq $currentDescriptor }                    
-                    $ugRawDataDumpName = $ug = $currentUser.SvcUserName
+                    $currentUser = $allSvcUsers | Where-Object { $_.FullDescriptor -eq $currentDescriptor }
+                    if (-not $currentUser) {
+                        # Fallback: project-scoped service identities (e.g. Project Build Service)
+                        # are not in the pre-cached svc.* graph users walk. Resolve via identity API.
+                        try {
+                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=6.0"
+                            $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
+                            if ($id.value) {
+                                $currentUser = [PSCustomObject]@{
+                                    SvcUserName = $id.value.providerDisplayName
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log -Message "ServiceIdentity lookup failed for $currentDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace' -Uri $identUri
+                        }
+                    }
+                    if ($currentUser -and $currentUser.SvcUserName) {
+                        $ugRawDataDumpName = $ug = $currentUser.SvcUserName
+                    }
+                    else {
+                        $ug = $currentDescriptor
+                        $ugRawDataDumpName = "UnresolvedServiceIdentity"
+                        Write-Log -Message "Unresolved ServiceIdentity: $currentDescriptor" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+                    }
                     $des = ""
-                    Write-Host "User: $($currentUser.SvcUserName)"
-                    $groupType = "User"                    
+                    Write-Host "User: $ug"
+                    $groupType = "User"
                 } elseif ($_.value.descriptor -like "Microsoft.IdentityModel.Claims.ClaimsIdentity*") {
                     # ClaimsIdentity descriptors identify individual AAD users granted permissions
                     # directly in the UI. The descriptor is shaped like
@@ -1498,7 +1521,14 @@ Function Get-PermissionsByNamespace()
                         if ($id.value) {
                             $ug = $id.value.providerDisplayName
                             $ugRawDataDumpName = $ug
-                            $groupType = if ($id.value.properties.SchemaClassName.'$value' -eq 'ServicePrincipal') { "Service Principal" } else { "Unknown" }
+                            # Managed Identities and registered SPs both report SchemaClassName=ServicePrincipal
+                            # in ADO. Without Microsoft Graph (out of scope), use the providerDisplayName
+                            # to differentiate: MSI names typically end in -msi, contain kubelet/managed-,
+                            # or start with msi-.
+                            $isMSI = $id.value.providerDisplayName -match '(?i)(-msi$|/msi$|kubelet|^msi-|managed-)'
+                            $groupType = if ($id.value.properties.SchemaClassName.'$value' -eq 'ServicePrincipal') {
+                                if ($isMSI) { 'Managed Identity' } else { 'Service Principal' }
+                            } else { 'Unknown' }
                             Write-Host "Resolved unmatched descriptor: $ug (type: $groupType)"
                         }
                     }

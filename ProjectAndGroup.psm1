@@ -158,6 +158,51 @@ function Get-GroupMembershipReport(){
         if ($projectIds -contains $p.id) { $projectIdToName[$p.id] = $p.Name }
     }
 
+    # Per-project scoped group fetch. The org-level graph/groups call does not
+    # reliably enumerate built-in well-known project groups (Project Admins,
+    # Contributors, Readers, Build Admins, Endpoint Admins, Endpoint Creators,
+    # Release Admins, Project Valid Users). The scopeDescriptor variant does.
+    $projectScopedGroups = @{}
+    foreach ($projId in $projectIds) {
+        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projId + "?api-version=7.0-preview1"
+        try {
+            $scopeResp = Invoke-AdoRestMethod -Uri $scopeUri -Method Get -Headers $authorization
+            $scope = $scopeResp.value
+        }
+        catch {
+            Write-Log -Message "Failed to resolve scope descriptor for project $projId : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $scopeUri
+            continue
+        }
+        if (-not $scope) { continue }
+
+        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.0-preview1"
+        $uri = $scopedGroupsBaseUri
+        $scopedList = [System.Collections.Generic.List[object]]::new()
+        do {
+            $headers = $null
+            try {
+                $resp = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
+            }
+            catch {
+                Write-Log -Message "Scoped group fetch failed for project $projId : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $uri
+                break
+            }
+            foreach ($g in $resp.value) { $scopedList.Add($g) }
+            if ($headers -and $headers["x-ms-continuationtoken"]) {
+                $uri = $scopedGroupsBaseUri + "&continuationToken=" + [System.Uri]::EscapeDataString($headers["x-ms-continuationtoken"])
+            }
+        } while ($headers -and $headers["x-ms-continuationtoken"])
+
+        $projectScopedGroups[$projId] = $scopedList
+        # Union into $allGroups so descriptor lookups in resolve paths can find them
+        foreach ($g in $scopedList) {
+            if (-not ($allGroups | Where-Object { $_.descriptor -eq $g.descriptor } | Select-Object -First 1)) {
+                $allGroups += $g
+            }
+        }
+        Write-Log -Message "Fetched $($scopedList.Count) scoped groups for project $($projectIdToName[$projId])" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+    }
+
     # Index all groups by descriptor for fast union with ACL-derived principals
     $groupsByDescriptor = @{}
     foreach ($g in $allGroups) {
@@ -174,6 +219,50 @@ function Get-GroupMembershipReport(){
     }
     catch {
         Write-Log -Message "Failed to fetch security namespaces; ACL harvest disabled: $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $nsUri
+    }
+
+    # Fetch ACLs once per namespace with NO token + recurse=true. We filter per project
+    # later using token-prefix predicates. This replaces the prior approach of sending
+    # a single '$PROJECT:vstfs:///Classification/TeamProject/<id>' token to every
+    # namespace, which is only valid for the Project namespace and caused 403s
+    # elsewhere (Git, Build, Library, Environment, CSS, etc.).
+    $aclsByNamespace = @{}
+    foreach ($ns in $namespaces) {
+        $aclUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct +
+                  "/_apis/accesscontrollists/$($ns.namespaceId)?recurse=true&includeExtendedInfo=false&api-version=6.0"
+        try {
+            $resp = Invoke-AdoRestMethod -Uri $aclUri -Method Get -Headers $authorization
+            $aclsByNamespace[$ns.namespaceId] = $resp.value
+        }
+        catch {
+            Write-Log -Message "ACL harvest failed for namespace $($ns.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $aclUri
+            $aclsByNamespace[$ns.namespaceId] = @()
+        }
+    }
+
+    # Classification-node roots per project (used by CSS/Iteration token-prefix match,
+    # whose tokens encode 'vstfs:///Classification/Node/<rootGuid>...' rather than
+    # the project GUID).
+    $projectRootNodeIds = @{}
+    foreach ($projId in $projectIds) {
+        $projName = $projectIdToName[$projId]
+        if (-not $projName) { continue }
+        $projectRootNodeIds[$projId] = @{ Area = $null; Iteration = $null }
+        foreach ($struct in @('Areas', 'Iterations')) {
+            $cnUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" +
+                     [System.Uri]::EscapeDataString($projName) +
+                     "/_apis/wit/classificationnodes/$struct" + "?`$depth=0&api-version=6.0"
+            try {
+                $cn = Invoke-AdoRestMethod -Uri $cnUri -Method Get -Headers $authorization
+                if ($cn.identifier) {
+                    $key = if ($struct -eq 'Areas') { 'Area' } else { 'Iteration' }
+                    $projectRootNodeIds[$projId][$key] = $cn.identifier
+                }
+            }
+            catch {
+                Write-Log -Message "Classification-node lookup failed for $projName ($struct): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $cnUri
+            }
+        }
     }
 
     # Build the per-project principal list by unioning:
@@ -198,29 +287,57 @@ function Get-GroupMembershipReport(){
             }
         }
 
-        # (b) ACL-derived principals: harvest SID descriptors from every namespace's
-        # project-scoped ACL, then translate SID -> graph subjectDescriptor via
-        # /_apis/identities batched lookups, then match against $groupsByDescriptor.
+        # (a2) Project-scope-descriptor groups (built-in well-known project groups)
+        if ($projectScopedGroups.ContainsKey($projId)) {
+            foreach ($g in $projectScopedGroups[$projId]) {
+                if ($seenForProject.Add($g.descriptor)) {
+                    $clone = $g | Select-Object *
+                    $clone | Add-Member -NotePropertyName '_projectTag' -NotePropertyValue $projectTag -Force
+                    $prjGroups.Add($clone)
+                }
+            }
+        }
+
+        # (b) ACL-derived principals: filter the per-namespace ACL cache down to tokens
+        # that belong to this project, then harvest SID descriptors from acesDictionary,
+        # translate SID -> graph subjectDescriptor in batches, and union into prjGroups.
         if ($namespaces.Count -gt 0) {
             $sidDescriptors = [System.Collections.Generic.HashSet[string]]::new()
+            $areaRoot = if ($projectRootNodeIds.ContainsKey($projId)) { $projectRootNodeIds[$projId].Area } else { $null }
+            $iterRoot = if ($projectRootNodeIds.ContainsKey($projId)) { $projectRootNodeIds[$projId].Iteration } else { $null }
             foreach ($ns in $namespaces) {
-                $token = "`$PROJECT:vstfs:///Classification/TeamProject/$projId"
-                $aclUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct +
-                          "/_apis/accesscontrollists/$($ns.namespaceId)?token=" +
-                          [System.Uri]::EscapeDataString($token) +
-                          "&includeExtendedInfo=true&recurse=false&api-version=6.0"
-                try {
-                    $acls = Invoke-AdoRestMethod -Uri $aclUri -Method Get -Headers $authorization
-                    foreach ($acl in $acls.value) {
-                        if ($acl.acesDictionary) {
-                            foreach ($aceKey in $acl.acesDictionary.PSObject.Properties.Name) {
-                                [void]$sidDescriptors.Add($aceKey)
-                            }
+                $nsAcls = $aclsByNamespace[$ns.namespaceId]
+                if (-not $nsAcls -or $nsAcls.Count -eq 0) { continue }
+                foreach ($acl in $nsAcls) {
+                    $tok = $acl.token
+                    if ([string]::IsNullOrEmpty($tok)) { continue }
+
+                    # Token-prefix predicate per namespace (derived from ADO security
+                    # namespace token formats). Most namespaces embed the project GUID
+                    # directly; CSS/Iteration embed classification-node GUIDs;
+                    # VersionControlItems uses the project name.
+                    $matches = $false
+                    if ($tok.IndexOf($projId, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        $matches = $true
+                    }
+                    elseif ($ns.name -eq 'VersionControlItems' -and $projectTag) {
+                        if ($tok -eq "`$/$projectTag" -or $tok.StartsWith("`$/$projectTag/", [StringComparison]::OrdinalIgnoreCase)) {
+                            $matches = $true
                         }
                     }
-                }
-                catch {
-                    Write-Log -Message "ACL harvest failed for namespace $($ns.name) on project $projectTag : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $aclUri
+                    elseif (($ns.name -eq 'CSS' -or $ns.name -eq 'Iteration')) {
+                        $root = if ($ns.name -eq 'CSS') { $areaRoot } else { $iterRoot }
+                        if ($root -and $tok.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                            $matches = $true
+                        }
+                    }
+
+                    if (-not $matches) { continue }
+                    if ($acl.acesDictionary) {
+                        foreach ($aceKey in $acl.acesDictionary.PSObject.Properties.Name) {
+                            [void]$sidDescriptors.Add($aceKey)
+                        }
+                    }
                 }
             }
 
