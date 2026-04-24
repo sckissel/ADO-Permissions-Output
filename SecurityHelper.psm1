@@ -650,7 +650,7 @@ function Get-SecuritybyGroupByNamespace()
         
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
-            $uri = $projectUri + "&continuationToken=" + $continuation
+            $uri = $projectUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
         }
     } while ($headers -and $headers["x-ms-continuationtoken"])
 
@@ -710,7 +710,7 @@ function Get-SecuritybyGroupByNamespace()
         
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
-            $uri = $usersUri + "&continuationToken=" + $continuation
+            $uri = $usersUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
         }
     } while ($headers -and $headers["x-ms-continuationtoken"])
 

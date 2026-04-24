@@ -8,7 +8,8 @@ parameters:
     displayName: 'ADO Organization Name'
   - name: ProjectName
     type: string
-    displayName: 'Project Name'
+    default: ' '
+    displayName: 'Project Name (leave blank / single space if extracting all projects)'
   - name: AllProjects
     type: boolean
     default: false
