@@ -635,19 +635,19 @@ function Get-SecuritybyGroupByNamespace()
     $allTeams = [PSCustomObject]@{ value = $teamsList }
     Write-Log -Message "Fetched $($teamsList.Count) teams" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
     
-    # get all groups in org or just for a given project
-    # vssgp,aadgp are the subject types use vssgp to get groups for a given project
-    $groupsUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?subjectTypes=vssgp&api-version=6.0-preview.1"
+    # get all groups (vssgp AND aadgp) in org. Do NOT filter by subjectTypes on the first
+    # page: doing so silently drops AAD groups that are directly ACL'd on a project, and
+    # those groups do appear in the Project Settings > Permissions UI.
     $projectUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=6.0-preview.1"
-    
-    $uri = $groupsUri
+
+    $uri = $projectUri
     $allGroups = @()
     do {
         Write-Output "Calling API to acquire all groups in batches..."
         $headers = $null
         $response = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
         $allGroups += $response.value
-        
+
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
             $uri = $projectUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
@@ -667,6 +667,11 @@ function Get-SecuritybyGroupByNamespace()
         $groups = $allGroups 
         $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         $projectDetails = $orgProjects.value | Where-Object { $_.Name -in $projectNames }
+        if ($projectNames.Count -gt 0 -and ($null -eq $projectDetails -or @($projectDetails).Count -eq 0)) {
+            $requested = $projectNames -join ', '
+            Write-Log -Message "No Azure DevOps projects matched the requested project filter(s): $requested" -Level 'Error' -FunctionName 'Get-SecuritybyGroupByNamespace'
+            throw "No matching Azure DevOps projects were found for the requested project name(s): $requested"
+        }
     }
 
     $allGroupInfo = @()
@@ -1437,9 +1442,46 @@ Function Get-PermissionsByNamespace()
                     Write-Host "User: $($currentUser.SvcUserName)"
                     $groupType = "User"                    
                 } elseif ($_.value.descriptor -like "Microsoft.IdentityModel.Claims.ClaimsIdentity*") {
-                    $currentUser = $users | Where-Object { $_.principalName -in $currentDescriptor.split('\')[-1]}
-                    $ug = "$($currentUser.DisplayName)" + " ($($currentUser.PrincipalName))"
-                    $ugRawDataDumpName = $currentUser.DisplayName
+                    # ClaimsIdentity descriptors identify individual AAD users granted permissions
+                    # directly in the UI. The descriptor is shaped like
+                    #   Microsoft.IdentityModel.Claims.ClaimsIdentity;<tenantId>\<upn>
+                    # Try several match strategies before falling back to the identity API so the
+                    # user's display name and principal name are populated in the CSV/JSON output.
+                    $descLastSegment = $currentDescriptor.Split('\')[-1]
+                    $currentUser = $users | Where-Object { $_.principalName -eq $descLastSegment } | Select-Object -First 1
+                    if (-not $currentUser) {
+                        $currentUser = $users | Where-Object { $_.mailAddress -eq $descLastSegment } | Select-Object -First 1
+                    }
+                    if (-not $currentUser) {
+                        $currentUser = $users | Where-Object { $_.descriptor -eq $currentDescriptor } | Select-Object -First 1
+                    }
+                    if (-not $currentUser) {
+                        # Fallback: resolve via identity API (handles users not in the pre-fetched
+                        # graph users list, e.g. guests, disabled, or cross-tenant accounts).
+                        try {
+                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=6.0"
+                            $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
+                            if ($id.value) {
+                                $currentUser = [PSCustomObject]@{
+                                    DisplayName   = $id.value.providerDisplayName
+                                    PrincipalName = if ($id.value.properties.Mail.'$value') { $id.value.properties.Mail.'$value' } else { $descLastSegment }
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log -Message "ClaimsIdentity lookup failed for $currentDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace' -Uri $identUri
+                        }
+                    }
+                    if ($currentUser -and $currentUser.DisplayName) {
+                        $ug = "$($currentUser.DisplayName) ($($currentUser.PrincipalName))"
+                        $ugRawDataDumpName = $currentUser.DisplayName
+                    }
+                    else {
+                        # Last-ditch: surface the descriptor's UPN segment so the row is not blank.
+                        $ug = $descLastSegment
+                        $ugRawDataDumpName = $descLastSegment
+                        Write-Log -Message "Unresolved ClaimsIdentity user: $currentDescriptor" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+                    }
                     $des = ""
                     Write-Host "User: $ug"
                     $groupType = "User"

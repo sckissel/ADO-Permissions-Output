@@ -144,16 +144,117 @@ function Get-GroupMembershipReport(){
     } else {
         $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         $projectIds = @(($orgProjects.value | Where-Object { $_.Name -in $projectNames }).id)
+        if ($projectNames.Count -gt 0 -and $projectIds.Count -eq 0) {
+            $requested = $projectNames -join ', '
+            $message = "No Azure DevOps projects matched the requested project filter(s): $requested"
+            Write-Log -Message $message -Level 'Error' -FunctionName 'Get-GroupMembershipReport'
+            throw $message
+        }
     }
 
-    # Filter groups to target project(s) by domain
-    $prjGroups = $allGroups | Where-Object {
-        foreach ($pid in $projectIds) {
-            if ($_.domain -eq "vstfs:///Classification/TeamProject/$pid") { return $true }
-        }
-        return $false
+    # Index project id -> name for bucketing per-project output
+    $projectIdToName = @{}
+    foreach ($p in $orgProjects.value) {
+        if ($projectIds -contains $p.id) { $projectIdToName[$p.id] = $p.Name }
     }
-    Write-Log -Message "Processing $($prjGroups.Count) project groups" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+
+    # Index all groups by descriptor for fast union with ACL-derived principals
+    $groupsByDescriptor = @{}
+    foreach ($g in $allGroups) {
+        if ($g.descriptor) { $groupsByDescriptor[$g.descriptor] = $g }
+    }
+
+    # Fetch security namespaces once for the ACL harvest (matches what the UI shows)
+    $namespaces = @()
+    $nsUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/securitynamespaces?api-version=6.1-preview.1"
+    try {
+        $nsResp = Invoke-AdoRestMethod -Uri $nsUri -Method Get -Headers $authorization
+        $namespaces = $nsResp.value
+        Write-Log -Message "Fetched $($namespaces.Count) security namespaces for ACL harvest" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+    }
+    catch {
+        Write-Log -Message "Failed to fetch security namespaces; ACL harvest disabled: $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $nsUri
+    }
+
+    # Build the per-project principal list by unioning:
+    #   (a) groups whose domain matches the project (project-scoped groups), with
+    #   (b) every principal carrying an ACE on any of the project's security tokens
+    #       (captures collection-scoped [TEAM FOUNDATION]\* groups and AAD groups
+    #       directly granted permissions on the project - matching the UI).
+    $prjGroups = [System.Collections.Generic.List[object]]::new()
+    foreach ($projId in $projectIds) {
+        $projectTag = $projectIdToName[$projId]
+        if (-not $projectTag) { continue }
+        $seenForProject = [System.Collections.Generic.HashSet[string]]::new()
+
+        # (a) Domain-matched groups
+        foreach ($g in $allGroups) {
+            if ($g.domain -eq "vstfs:///Classification/TeamProject/$projId") {
+                if ($seenForProject.Add($g.descriptor)) {
+                    $clone = $g | Select-Object *
+                    $clone | Add-Member -NotePropertyName '_projectTag' -NotePropertyValue $projectTag -Force
+                    $prjGroups.Add($clone)
+                }
+            }
+        }
+
+        # (b) ACL-derived principals: harvest SID descriptors from every namespace's
+        # project-scoped ACL, then translate SID -> graph subjectDescriptor via
+        # /_apis/identities batched lookups, then match against $groupsByDescriptor.
+        if ($namespaces.Count -gt 0) {
+            $sidDescriptors = [System.Collections.Generic.HashSet[string]]::new()
+            foreach ($ns in $namespaces) {
+                $token = "`$PROJECT:vstfs:///Classification/TeamProject/$projId"
+                $aclUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct +
+                          "/_apis/accesscontrollists/$($ns.namespaceId)?token=" +
+                          [System.Uri]::EscapeDataString($token) +
+                          "&includeExtendedInfo=true&recurse=false&api-version=6.0"
+                try {
+                    $acls = Invoke-AdoRestMethod -Uri $aclUri -Method Get -Headers $authorization
+                    foreach ($acl in $acls.value) {
+                        if ($acl.acesDictionary) {
+                            foreach ($aceKey in $acl.acesDictionary.PSObject.Properties.Name) {
+                                [void]$sidDescriptors.Add($aceKey)
+                            }
+                        }
+                    }
+                }
+                catch {
+                    Write-Log -Message "ACL harvest failed for namespace $($ns.name) on project $projectTag : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $aclUri
+                }
+            }
+
+            # Translate SID descriptors to graph subjectDescriptors in batches
+            if ($sidDescriptors.Count -gt 0) {
+                $sidList = [System.Collections.Generic.List[string]]::new($sidDescriptors)
+                $batchSize = 50
+                for ($i = 0; $i -lt $sidList.Count; $i += $batchSize) {
+                    $take = [Math]::Min($batchSize, $sidList.Count - $i)
+                    $slice = $sidList.GetRange($i, $take)
+                    $descParam = ($slice -join ',')
+                    $idUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct +
+                            "/_apis/identities?descriptors=" + [System.Uri]::EscapeDataString($descParam) +
+                            "&queryMembership=None&api-version=6.0"
+                    try {
+                        $idResp = Invoke-AdoRestMethod -Uri $idUri -Method Get -Headers $authorization
+                        foreach ($ident in $idResp.value) {
+                            if ($ident.subjectDescriptor -and $groupsByDescriptor.ContainsKey($ident.subjectDescriptor)) {
+                                if ($seenForProject.Add($ident.subjectDescriptor)) {
+                                    $clone = $groupsByDescriptor[$ident.subjectDescriptor] | Select-Object *
+                                    $clone | Add-Member -NotePropertyName '_projectTag' -NotePropertyValue $projectTag -Force
+                                    $prjGroups.Add($clone)
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Log -Message "Identity translation failed for project $projectTag : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport' -Uri $idUri
+                    }
+                }
+            }
+        }
+    }
+    Write-Log -Message "Processing $($prjGroups.Count) project groups (domain + ACL union)" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
     # $outputResult and $aadGroupsResolved are declared per-project in the processing loop below
 
@@ -241,12 +342,26 @@ function Get-GroupMembershipReport(){
                 }
                 $outputResult.Add($details)
 
-                # Recursively resolve AAD groups if enabled — use HierarchyQuery for Entra group members
-                if ($recurseAAD -and ($memberDetails.subjectKind -eq "group") -and ($item.memberDescriptor -like "aadgp.*")) {
-                    if (-not $aadGroupsResolved.Contains($item.memberDescriptor)) {
-                        $aadGroupsResolved.Add($item.memberDescriptor) | Out-Null
-                        Write-Log -Message "Recursing into AAD group via HierarchyQuery: $($memberDetails.displayName)" -Level 'Info' -FunctionName 'Resolve-GroupMembers'
-                        Resolve-AadGroupMembers -descriptor $item.memberDescriptor -parentName $memberDetails.principalName -projectDisplayName $projectDisplayName
+                # Recursively resolve nested groups - both AAD (via HierarchyQuery to capture
+                # disabled/deleted identities) and VSS/ADO groups (via direct Memberships API).
+                # Visited-sets prevent cycles and redundant work.
+                if ($memberDetails.subjectKind -eq "group") {
+                    if ($recurseAAD -and ($item.memberDescriptor -like "aadgp.*")) {
+                        if ($aadGroupsResolved.Add($item.memberDescriptor)) {
+                            Write-Log -Message "Recursing into AAD group via HierarchyQuery: $($memberDetails.displayName)" -Level 'Info' -FunctionName 'Resolve-GroupMembers'
+                            Resolve-AadGroupMembers -descriptor $item.memberDescriptor -parentName $memberDetails.principalName -projectDisplayName $projectDisplayName
+                        }
+                    }
+                    elseif ($item.memberDescriptor -like "vssgp.*") {
+                        if ($vssGroupsResolved.Add($item.memberDescriptor)) {
+                            Write-Log -Message "Recursing into nested VSS group: $($memberDetails.displayName)" -Level 'Info' -FunctionName 'Resolve-GroupMembers'
+                            Resolve-GroupMembers -descriptor $item.memberDescriptor `
+                                -parentName $memberDetails.principalName `
+                                -projectDisplayName $projectDisplayName `
+                                -groupType "Group" `
+                                -groupDescription $null `
+                                -recurseAAD $recurseAAD
+                        }
                     }
                 }
             }
@@ -440,27 +555,30 @@ function Get-GroupMembershipReport(){
         }
     }
 
-    # Group the project groups by project for per-project output files
+    # Group the project groups by project for per-project output files.
+    # Use the _projectTag attached during harvest so [TEAM FOUNDATION]\* and aadgp.*
+    # principals land in the correct project file rather than bucketing on principalName prefix.
     $today = Get-Date -Format "MM-dd-yyyy"
-    $groupsByProject = $prjGroups | Group-Object -Property {
-        $parts = $_.principalName.Split('\')
-        $parts[0].Substring(1, $parts[0].Length - 2)
-    }
+    $groupsByProject = $prjGroups | Group-Object -Property _projectTag
 
     foreach ($projectGroup in $groupsByProject) {
         $projDisplayName = $projectGroup.Name
         $outputResult = [System.Collections.Generic.List[PSObject]]::new()
         $aadGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
+        $vssGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
 
         foreach ($group in $projectGroup.Group) {
             $prNameParts = $group.principalName.Split('\')
-            $shortName = $prNameParts[1]
+            $shortName = if ($prNameParts.Count -ge 2) { $prNameParts[1] } else { $group.principalName }
 
             $isTeam = $allTeams.value | Where-Object { ($_.ProjectName -eq $projDisplayName) -and ($_.name -eq $shortName) }
             $grpType = if ($isTeam) { "Team" } else { "Group" }
             $grpDesc = if ($group.description) { $group.description } else { $null }
 
             Write-Host "Processing: $($group.principalName)"
+
+            # Mark this top-level group as visited so nested references don't re-walk it
+            [void]$vssGroupsResolved.Add($group.descriptor)
 
             # Members: who is in this group (direction=down)
             Resolve-GroupMembers -descriptor $group.descriptor -parentName $group.principalName -projectDisplayName $projDisplayName -groupType $grpType -groupDescription $grpDesc -recurseAAD $recurseAADGroups
