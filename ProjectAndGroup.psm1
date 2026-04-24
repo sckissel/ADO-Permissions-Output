@@ -142,7 +142,8 @@ function Get-GroupMembershipReport(){
     if ($getAllProjects -eq "True") {
         $projectIds = $orgProjects.value | ForEach-Object { $_.id }
     } else {
-        $projectIds = @(($orgProjects.value | Where-Object { $_.Name -eq $projectName }).id)
+        $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $projectIds = @(($orgProjects.value | Where-Object { $_.Name -in $projectNames }).id)
     }
 
     # Filter groups to target project(s) by domain
