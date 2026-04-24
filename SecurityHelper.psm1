@@ -663,9 +663,10 @@ function Get-SecuritybyGroupByNamespace()
         $groups = $allGroups
         $projectDetails = $orgProjects.Value
     }else {
-        # find all groups for given project   
+        # find all groups for given project (supports comma-separated list)
         $groups = $allGroups 
-        $projectDetails = $orgProjects.value | Where-Object { $_.Name -eq $projectName }
+        $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $projectDetails = $orgProjects.value | Where-Object { $_.Name -in $projectNames }
     }
 
     $allGroupInfo = @()
