@@ -76,7 +76,7 @@ function Get-GroupMembershipReport(){
         $allUsers += $response.value
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
-            $uri = $usersUri + "&continuationToken=" + $continuation
+            $uri = $usersUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
         }
     } while ($headers -and $headers["x-ms-continuationtoken"])
     Write-Log -Message "Fetched $($allUsers.Count) users" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
@@ -92,7 +92,7 @@ function Get-GroupMembershipReport(){
         $allGroups += $response.value
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
-            $uri = $groupsUri + "&continuationToken=" + $continuation
+            $uri = $groupsUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
         }
     } while ($headers -and $headers["x-ms-continuationtoken"])
     Write-Log -Message "Fetched $($allGroups.Count) groups" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
@@ -134,7 +134,7 @@ function Get-GroupMembershipReport(){
         }
         $continuationToken = $response.continuationToken
         if ($continuationToken) {
-            $uri = $entitlementUri + "&continuationToken=" + $continuationToken
+            $uri = $entitlementUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuationToken)
         }
     } while ($continuationToken)
     Write-Log -Message "Fetched entitlements for $($entitlementLookup.Count) users" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'

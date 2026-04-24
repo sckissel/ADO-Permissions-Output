@@ -5,3 +5,4 @@ RawData/
 
 # Local-only helper scripts
 push-to-ado.ps1
+fix-changes.md
