@@ -1506,8 +1506,29 @@ Function Get-PermissionsByNamespace()
                             $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
                             $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                             if ($id.value) {
+                                $resolvedName = $id.value.providerDisplayName
+                                # Project (and Project Collection) Build Service identities have a
+                                # providerDisplayName that is just the project GUID. Detect that and
+                                # construct the friendly "<Project> Build Service (<Org>)" form.
+                                # ServiceIdentity descriptors carry the scope after the first ';',
+                                # e.g. "Build:<orgGuid>:<projectGuid>" (project-scoped) or
+                                # "Build:<orgGuid>" (collection-scoped).
+                                $parsedGuid = [guid]::Empty
+                                $isGuid = [guid]::TryParse([string]$resolvedName, [ref]$parsedGuid)
+                                if ($isGuid -or [string]::IsNullOrWhiteSpace($resolvedName)) {
+                                    $svcScope = $currentDescriptor.Split(';', 2)[1]
+                                    if ($svcScope -like 'Build:*') {
+                                        $scopeParts = $svcScope.Split(':')
+                                        if ($scopeParts.Count -ge 3) {
+                                            $resolvedName = "$projName Build Service ($VSTSMasterAcct)"
+                                        }
+                                        else {
+                                            $resolvedName = "Project Collection Build Service ($VSTSMasterAcct)"
+                                        }
+                                    }
+                                }
                                 $currentUser = [PSCustomObject]@{
-                                    SvcUserName = $id.value.providerDisplayName
+                                    SvcUserName = $resolvedName
                                 }
                             }
                         }
