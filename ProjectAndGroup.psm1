@@ -66,7 +66,7 @@ function Get-GroupMembershipReport(){
     Write-Log -Message "Starting membership report" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
     # Pre-fetch all users in org with continuation token support for in-memory matching
-    $usersUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.2-preview.1"
+    $usersUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.1-preview.1"
     $uri = $usersUri
     $allUsers = @()
     do {
@@ -82,7 +82,7 @@ function Get-GroupMembershipReport(){
     Write-Log -Message "Fetched $($allUsers.Count) users" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
     # Pre-fetch all groups in org with continuation token support
-    $groupsUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.2-preview.1"
+    $groupsUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.1-preview.1"
     $uri = $groupsUri
     $allGroups = @()
     do {
@@ -164,7 +164,7 @@ function Get-GroupMembershipReport(){
     # Release Admins, Project Valid Users). The scopeDescriptor variant does.
     $projectScopedGroups = @{}
     foreach ($projId in $projectIds) {
-        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projId + "?api-version=7.2-preview.1"
+        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projId + "?api-version=7.1-preview.1"
         try {
             $scopeResp = Invoke-AdoRestMethod -Uri $scopeUri -Method Get -Headers $authorization
             $scope = $scopeResp.value
@@ -175,7 +175,7 @@ function Get-GroupMembershipReport(){
         }
         if (-not $scope) { continue }
 
-        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.2-preview.1"
+        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.1-preview.1"
         $uri = $scopedGroupsBaseUri
         $scopedList = [System.Collections.Generic.List[object]]::new()
         do {
@@ -459,7 +459,7 @@ function Get-GroupMembershipReport(){
             }
             else {
                 # Fallback: API lookup for unmatched descriptors (nested groups, service accounts)
-                $lookupUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/subjectlookup?api-version=7.2-preview.1"
+                $lookupUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/subjectlookup?api-version=7.1-preview.1"
                 $body = @{ 'lookupKeys' = @(@{ 'descriptor' = "$($item.memberDescriptor)" }) } | ConvertTo-Json
                 try {
                     $response = Invoke-AdoRestMethod -Uri $lookupUri -Method Post -Headers $authorization -Body $body -ContentType 'application/json'
@@ -548,7 +548,7 @@ function Get-GroupMembershipReport(){
     function Resolve-AadGroupMembers {
         param($descriptor, $parentName, $projectDisplayName)
 
-        $hierUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/Contribution/HierarchyQuery?api-version=7.2-preview.1"
+        $hierUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/Contribution/HierarchyQuery?api-version=7.1-preview.1"
         $pageUrl = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectDisplayName + "/_settings/permissions?subjectDescriptor=" + $descriptor
         $hierBody = @{
             contributionIds = @("ms.vss-admin-web.org-admin-group-members-data-provider")
@@ -688,7 +688,7 @@ function Get-GroupMembershipReport(){
             }
             else {
                 # Fallback: subject lookup for parent groups not in cache (org-level groups)
-                $lookupUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/subjectlookup?api-version=7.2-preview.1"
+                $lookupUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/subjectlookup?api-version=7.1-preview.1"
                 $body = @{ 'lookupKeys' = @(@{ 'descriptor' = "$($item.containerDescriptor)" }) } | ConvertTo-Json
                 try {
                     $response = Invoke-AdoRestMethod -Uri $lookupUri -Method Post -Headers $authorization -Body $body -ContentType 'application/json'

@@ -638,7 +638,7 @@ function Get-SecuritybyGroupByNamespace()
     # get all groups (vssgp AND aadgp) in org. Do NOT filter by subjectTypes on the first
     # page: doing so silently drops AAD groups that are directly ACL'd on a project, and
     # those groups do appear in the Project Settings > Permissions UI.
-    $projectUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.2-preview.1"
+    $projectUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.1-preview.1"
 
     $uri = $projectUri
     $allGroups = @()
@@ -682,7 +682,7 @@ function Get-SecuritybyGroupByNamespace()
     $existingDescriptors = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($g in $groups) { if ($g.descriptor) { [void]$existingDescriptors.Add($g.descriptor) } }
     foreach ($projDetail in $projectDetails) {
-        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projDetail.id + "?api-version=7.2-preview.1"
+        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projDetail.id + "?api-version=7.1-preview.1"
         try {
             $scopeResp = Invoke-AdoRestMethod -Uri $scopeUri -Method Get -Headers $authorization
             $scope = $scopeResp.value
@@ -693,7 +693,7 @@ function Get-SecuritybyGroupByNamespace()
         }
         if (-not $scope) { continue }
 
-        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.2-preview.1"
+        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.1-preview.1"
         $sgUri = $scopedGroupsBaseUri
         $added = 0
         do {
@@ -749,7 +749,7 @@ function Get-SecuritybyGroupByNamespace()
     }  
 
     # get all users
-    $usersUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.2-preview.1"
+    $usersUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.1-preview.1"
     $uri = $usersUri
     $allUsers = @()
     do {
@@ -1450,7 +1450,7 @@ Function Get-PermissionsByNamespace()
                     # Gather name using identity lookup.
                     if (!$ident) {
                         try {
-                            $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                            $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.1-preview.1"
                             $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                         }
                         catch {
@@ -1503,7 +1503,7 @@ Function Get-PermissionsByNamespace()
                         # Fallback: project-scoped service identities (e.g. Project Build Service)
                         # are not in the pre-cached svc.* graph users walk. Resolve via identity API.
                         try {
-                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.1-preview.1"
                             $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                             if ($id.value) {
                                 $resolvedName = $id.value.providerDisplayName
@@ -1565,7 +1565,7 @@ Function Get-PermissionsByNamespace()
                         # Fallback: resolve via identity API (handles users not in the pre-fetched
                         # graph users list, e.g. guests, disabled, or cross-tenant accounts).
                         try {
-                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.1-preview.1"
                             $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                             if ($id.value) {
                                 $currentUser = [PSCustomObject]@{
@@ -1599,7 +1599,7 @@ Function Get-PermissionsByNamespace()
                     $des = ""
                     $groupType = "Unknown"
                     try {
-                        $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                        $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.1-preview.1"
                         $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                         if ($id.value) {
                             $ug = $id.value.providerDisplayName
