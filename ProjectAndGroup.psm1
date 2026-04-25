@@ -375,6 +375,53 @@ function Get-GroupMembershipReport(){
 
     # $outputResult and $aadGroupsResolved are declared per-project in the processing loop below
 
+    # Helper: when subjectlookup returns a Project Build Service (or other service
+    # identity) with displayName == bare project GUID, resolve the underlying
+    # Microsoft.TeamFoundation.ServiceIdentity descriptor and synthesize the
+    # friendly "<Project> Build Service (<Org>)" form. Returns the original
+    # display name unchanged when it isn't a GUID.
+    function Resolve-ServiceIdentityName {
+        param($subjectDescriptor, $rawDisplayName)
+
+        $parsedGuid = [guid]::Empty
+        if (-not [guid]::TryParse([string]$rawDisplayName, [ref]$parsedGuid)) {
+            return $rawDisplayName
+        }
+        if ([string]::IsNullOrWhiteSpace($subjectDescriptor)) {
+            return $rawDisplayName
+        }
+
+        try {
+            $idUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct +
+                     "/_apis/identities?subjectDescriptors=" + $subjectDescriptor +
+                     "&queryMembership=None&api-version=7.2"
+            $resp = Invoke-AdoRestMethod -Uri $idUri -Method Get -Headers $authorization
+        }
+        catch {
+            Write-Log -Message "Service identity resolve failed for $subjectDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Resolve-ServiceIdentityName' -Uri $idUri
+            return $rawDisplayName
+        }
+
+        $sidDescriptor = $resp.value | Select-Object -First 1 -ExpandProperty descriptor -ErrorAction SilentlyContinue
+        if (-not $sidDescriptor -or $sidDescriptor -notlike 'Microsoft.TeamFoundation.ServiceIdentity*') {
+            return $rawDisplayName
+        }
+
+        $svcScope = $sidDescriptor.Split(';', 2)[1]
+        if ($svcScope -like 'Build:*') {
+            $scopeParts = $svcScope.Split(':')
+            if ($scopeParts.Count -ge 3) {
+                $projGuidFromScope = $scopeParts[2]
+                if ($projectIdToName.ContainsKey($projGuidFromScope)) {
+                    return "$($projectIdToName[$projGuidFromScope]) Build Service ($VSTSMasterAcct)"
+                }
+                return "Project Build Service ($VSTSMasterAcct)"
+            }
+            return "Project Collection Build Service ($VSTSMasterAcct)"
+        }
+        return $rawDisplayName
+    }
+
     # Helper: resolve members of a group descriptor (direction=down)
     function Resolve-GroupMembers {
         param($descriptor, $parentName, $projectDisplayName, $groupType, $groupDescription, [bool]$recurseAAD = $false)
@@ -424,6 +471,16 @@ function Get-GroupMembershipReport(){
 
                 $memberDetails = $response.value."$($item.memberDescriptor)"
                 if (-not $memberDetails) { continue }
+
+                # Service identities (svc.*) such as the Project Build Service have
+                # subjectlookup displayName set to the bare project GUID. Resolve to
+                # the friendly "<Project> Build Service (<Org>)" form before emit.
+                if ($item.memberDescriptor -like 'svc.*') {
+                    $resolvedDisplay = Resolve-ServiceIdentityName -subjectDescriptor $item.memberDescriptor -rawDisplayName $memberDetails.displayName
+                    if ($resolvedDisplay -ne $memberDetails.displayName) {
+                        $memberDetails | Add-Member -NotePropertyName 'displayName' -NotePropertyValue $resolvedDisplay -Force
+                    }
+                }
 
                 # Determine team vs group
                 $memberEntityType = "Group"
