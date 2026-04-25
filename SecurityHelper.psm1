@@ -959,8 +959,26 @@ Function Get-PermissionsByNamespace()
                     $matchName = "$projName - General Project Build"
                     Write-Host "non-tokenData ACL match: $matchName"                    
                 } elseif ($aclToken.token -in $tokenMatches.token) {
+                    # Build tokens are "<projectId>/<defId>" (or "<projectId>/<folderId>/<defId>"
+                    # for builds in folders). Resolve the trailing segment to its build
+                    # definition name + folder path so the report shows a human-readable
+                    # name instead of the entire $tokenData array.
                     $match = $true
-                    $matchName = $tokenData.Name
+                    $defIdSegment = $aclToken.token.Split('/')[-1]
+                    $buildDef = $tokenData | Where-Object { "$($_.id)" -eq $defIdSegment } | Select-Object -First 1
+                    if ($buildDef) {
+                        $folder = $buildDef.path
+                        if ([string]::IsNullOrEmpty($folder) -or $folder -eq '\') {
+                            $matchName = "$projName - Build: $($buildDef.name)"
+                        }
+                        else {
+                            $matchName = "$projName - Build: $($folder.TrimEnd('\'))\$($buildDef.name)"
+                        }
+                    }
+                    else {
+                        # Fallback: keep raw token if the def is no longer present (deleted).
+                        $matchName = "$projName - Build (unresolved id $defIdSegment)"
+                    }
                     Write-Host "TokenData Match: $matchName"
                 }                           
             }
