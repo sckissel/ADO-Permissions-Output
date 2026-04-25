@@ -674,6 +674,50 @@ function Get-SecuritybyGroupByNamespace()
         }
     }
 
+    # Per-project scope-descriptor group fetch. The org-wide graph/groups call does not
+    # reliably return built-in well-known project groups (Project Administrators,
+    # Contributors, Readers, Build Administrators, Endpoint Admins/Creators,
+    # Release Admins, Project Valid Users). Union those into $groups so $allGroupInfo
+    # has full descriptor coverage for ACL name resolution.
+    $existingDescriptors = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($g in $groups) { if ($g.descriptor) { [void]$existingDescriptors.Add($g.descriptor) } }
+    foreach ($projDetail in $projectDetails) {
+        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projDetail.id + "?api-version=7.1-preview.1"
+        try {
+            $scopeResp = Invoke-AdoRestMethod -Uri $scopeUri -Method Get -Headers $authorization
+            $scope = $scopeResp.value
+        }
+        catch {
+            Write-Log -Message "Failed to resolve scope descriptor for project $($projDetail.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $scopeUri
+            continue
+        }
+        if (-not $scope) { continue }
+
+        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.1-preview.1"
+        $sgUri = $scopedGroupsBaseUri
+        $added = 0
+        do {
+            $sgHeaders = $null
+            try {
+                $sgResp = Invoke-AdoRestMethod -Uri $sgUri -Method Get -Headers $authorization -ResponseHeaders ([ref]$sgHeaders)
+            }
+            catch {
+                Write-Log -Message "Scoped group fetch failed for project $($projDetail.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $sgUri
+                break
+            }
+            foreach ($g in $sgResp.value) {
+                if ($g.descriptor -and $existingDescriptors.Add($g.descriptor)) {
+                    $groups += $g
+                    $added++
+                }
+            }
+            if ($sgHeaders -and $sgHeaders["x-ms-continuationtoken"]) {
+                $sgUri = $scopedGroupsBaseUri + "&continuationToken=" + [System.Uri]::EscapeDataString($sgHeaders["x-ms-continuationtoken"])
+            }
+        } while ($sgHeaders -and $sgHeaders["x-ms-continuationtoken"])
+        Write-Log -Message "Unioned $added scoped groups for project $($projDetail.name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
+    }
+
     $allGroupInfo = @()
     # loop thru each group
     foreach ($fnd in $groups) {
