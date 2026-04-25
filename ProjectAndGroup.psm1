@@ -697,6 +697,26 @@ function Get-GroupMembershipReport(){
             # Mark this top-level group as visited so nested references don't re-walk it
             [void]$vssGroupsResolved.Add($group.descriptor)
 
+            # Emit a header row so every group appears in output even when it has no
+            # direct members and no parent groups (typical for default project groups
+            # like Build Administrators, Endpoint Creators, Readers in fresh projects).
+            $headerRow = [PSCustomObject]@{
+                ProjectName      = $projDisplayName
+                GroupName        = $group.principalName
+                GroupType        = $grpType
+                GroupDescription = $grpDesc
+                Relationship     = "GroupExists"
+                MemberType       = "Group"
+                DisplayName      = $group.displayName
+                MailAddress      = $group.mailAddress
+                PrincipalName    = $group.principalName
+                Origin           = $group.origin
+                ResolvedVia      = "Graph Groups API"
+                Status           = $null
+                LastAccessedDate = $null
+            }
+            $outputResult.Add($headerRow)
+
             # Members: who is in this group (direction=down)
             Resolve-GroupMembers -descriptor $group.descriptor -parentName $group.principalName -projectDisplayName $projDisplayName -groupType $grpType -groupDescription $grpDesc -recurseAAD $recurseAADGroups
 
