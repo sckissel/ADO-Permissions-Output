@@ -164,7 +164,7 @@ function Get-GroupMembershipReport(){
     # Release Admins, Project Valid Users). The scopeDescriptor variant does.
     $projectScopedGroups = @{}
     foreach ($projId in $projectIds) {
-        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projId + "?api-version=7.0-preview1"
+        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projId + "?api-version=7.1-preview.1"
         try {
             $scopeResp = Invoke-AdoRestMethod -Uri $scopeUri -Method Get -Headers $authorization
             $scope = $scopeResp.value
@@ -175,7 +175,7 @@ function Get-GroupMembershipReport(){
         }
         if (-not $scope) { continue }
 
-        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.0-preview1"
+        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.1-preview.1"
         $uri = $scopedGroupsBaseUri
         $scopedList = [System.Collections.Generic.List[object]]::new()
         do {
