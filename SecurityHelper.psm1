@@ -1547,7 +1547,25 @@ Function Get-PermissionsByNamespace()
                         }
                     }
                     if ($currentUser -and $currentUser.SvcUserName) {
-                        $ugRawDataDumpName = $ug = $currentUser.SvcUserName
+                        $resolvedName = $currentUser.SvcUserName
+                        # Project Build Service identities returned via graph/users have a
+                        # displayName equal to the project GUID. Detect that and rewrite to
+                        # the friendly "<Project> Build Service (<Org>)" form, matching the
+                        # behaviour of the unmatched-descriptor fallback below.
+                        $parsedGuid = [guid]::Empty
+                        if ([guid]::TryParse([string]$resolvedName, [ref]$parsedGuid) -or [string]::IsNullOrWhiteSpace($resolvedName)) {
+                            $svcScope = $currentDescriptor.Split(';', 2)[1]
+                            if ($svcScope -like 'Build:*') {
+                                $scopeParts = $svcScope.Split(':')
+                                if ($scopeParts.Count -ge 3) {
+                                    $resolvedName = "$projName Build Service ($VSTSMasterAcct)"
+                                }
+                                else {
+                                    $resolvedName = "Project Collection Build Service ($VSTSMasterAcct)"
+                                }
+                            }
+                        }
+                        $ugRawDataDumpName = $ug = $resolvedName
                     }
                     else {
                         $ug = $currentDescriptor
