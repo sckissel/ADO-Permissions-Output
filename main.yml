@@ -93,12 +93,19 @@ jobs:
           $outputBranch = "output"
           # Try to fetch the existing output branch; if it exists, check it out
           # so new files are added on top of prior runs (preserving history).
-          git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" fetch origin "refs/heads/${outputBranch}" 2>$null
-          if ($LASTEXITCODE -eq 0) {
+          $fetchOk = $true
+          try {
+              git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" fetch origin "refs/heads/${outputBranch}" 2>&1 | Out-Null
+              if ($LASTEXITCODE -ne 0) { $fetchOk = $false }
+          }
+          catch { $fetchOk = $false }
+
+          if ($fetchOk) {
               git checkout -B $outputBranch FETCH_HEAD
           }
           else {
               # First run: create an orphan branch with no shared history
+              Write-Host "Output branch does not exist yet — creating orphan branch '$outputBranch'"
               git checkout --orphan $outputBranch
               git rm -rf --cached . | Out-Null
           }
