@@ -90,10 +90,21 @@ jobs:
           git config --global user.email "${{ parameters.GitAuthorEmail }}"
           $PipelineInfo = "Pipeline: '$(Build.DefinitionName)' 'rev $(Build.BuildNumber)' (Project: $([uri]::EscapeDataString("$(System.TeamProject)")); Repository: $(Build.Repository.Name); Branch: $(Build.SourceBranchName) Commit: $(Build.SourceVersion))"
           git config --global user.name "$PipelineInfo"
-          git checkout -B $(Build.SourceBranchName) HEAD
+          $outputBranch = "output"
+          # Try to fetch the existing output branch; if it exists, check it out
+          # so new files are added on top of prior runs (preserving history).
+          git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" fetch origin "refs/heads/${outputBranch}" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+              git checkout -B $outputBranch FETCH_HEAD
+          }
+          else {
+              # First run: create an orphan branch with no shared history
+              git checkout --orphan $outputBranch
+              git rm -rf --cached . | Out-Null
+          }
           git add --force Security/
           git commit -m "AzDOSec $executionDateTimeInternationalReadable ($currentTimeZone)"
-          git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push origin HEAD:$(Build.SourceBranchName)
+          git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push origin "HEAD:refs/heads/$outputBranch"
           if ($LASTEXITCODE -ne 0) {
               Write-Warning "Git push failed (exit code $LASTEXITCODE). Ensure the Build Service identity has Contribute permission on this repository and branch policies allow direct pushes."
               if ('${{ parameters.PublishArtifact }}' -ne 'True') {
