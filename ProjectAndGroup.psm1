@@ -383,8 +383,12 @@ function Get-GroupMembershipReport(){
     function Resolve-ServiceIdentityName {
         param($subjectDescriptor, $rawDisplayName)
 
-        $parsedGuid = [guid]::Empty
-        if (-not [guid]::TryParse([string]$rawDisplayName, [ref]$parsedGuid)) {
+        # Skip resolution only when the display name clearly does NOT contain a
+        # GUID. The previous [guid]::TryParse gate rejected names like
+        # "<GUID> Build Service (<Org>)" because they aren't bare GUIDs -- but
+        # those still need resolution. A GUID-pattern regex catches both bare
+        # GUIDs and GUID-containing names.
+        if ($rawDisplayName -notmatch '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') {
             return $rawDisplayName
         }
         if ([string]::IsNullOrWhiteSpace($subjectDescriptor)) {
