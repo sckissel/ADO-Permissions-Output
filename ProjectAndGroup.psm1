@@ -379,22 +379,16 @@ function Get-GroupMembershipReport(){
     # identity) with displayName == bare project GUID, resolve the underlying
     # Microsoft.TeamFoundation.ServiceIdentity descriptor and synthesize the
     # friendly "<Project> Build Service (<Org>)" form. Returns the original
-    # display name unchanged when it isn't a GUID.
+    # display name unchanged when it is not a GUID-form Build Service name.
     function Resolve-ServiceIdentityName {
         param($subjectDescriptor, $rawDisplayName)
 
-        # Skip resolution only when the display name clearly does NOT contain a
-        # GUID. The previous [guid]::TryParse gate rejected names like
-        # "<GUID> Build Service (<Org>)" because they aren't bare GUIDs -- but
-        # those still need resolution. A GUID-pattern regex catches both bare
-        # GUIDs and GUID-containing names.
-        if ($rawDisplayName -notmatch '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') {
-            return $rawDisplayName
-        }
         if ([string]::IsNullOrWhiteSpace($subjectDescriptor)) {
             return $rawDisplayName
         }
 
+        # Translate the svc.* graph descriptor to its SID descriptor via the
+        # identity API, then check the scope for Build:*.
         try {
             $idUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct +
                      "/_apis/identities?subjectDescriptors=" + $subjectDescriptor +

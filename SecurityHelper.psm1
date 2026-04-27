@@ -786,6 +786,19 @@ function Get-SecuritybyGroupByNamespace()
                 $svcUserDescriptor = Get-DescriptorFromGroup -dscriptor $userFound.descriptor
                 $dscrpt = "Microsoft.TeamFoundation.ServiceIdentity;" + $svcUserDescriptor
                 $svcUserInfo = Add-svcUserInfo -object $userFound -project -$projectDetail.Name -fulldescriptor $dscrpt
+                # api-version 7.2 returns the bare project GUID as displayName for
+                # Build Service identities (6.0 returned the friendly name). Detect
+                # that from the descriptor scope and fix it once here so every
+                # downstream consumer gets the friendly name automatically.
+                if ($svcUserDescriptor -like 'Build:*') {
+                    $scopeParts = $svcUserDescriptor.Split(':')
+                    if ($scopeParts.Count -ge 3) {
+                        $svcUserInfo.SvcUserName = "$($projectDetail.name) Build Service ($VSTSMasterAcct)"
+                    }
+                    else {
+                        $svcUserInfo.SvcUserName = "Project Collection Build Service ($VSTSMasterAcct)"
+                    }
+                }
                 $allSvcUsers += $svcUserInfo
             }
         }
@@ -1479,40 +1492,6 @@ Function Get-PermissionsByNamespace()
                                 $groupType = "Group"
                             }
                             $des = $id.value.properties.Description.'$value'
-
-                            # Safety net: service identities (e.g. Build Service) may appear
-                            # with a Microsoft.TeamFoundation.Identity wrapper descriptor in
-                            # some ACLs. If the resolved name contains a GUID and the identity
-                            # has a svc.* subject descriptor, resolve the friendly name via the
-                            # ServiceIdentity SID.
-                            if ($ug -match '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' -and
-                                $id.value.subjectDescriptor -and ($id.value.subjectDescriptor -like 'svc.*')) {
-                                try {
-                                    $svcIdUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct +
-                                                "/_apis/identities?subjectDescriptors=" + $id.value.subjectDescriptor +
-                                                "&queryMembership=None&api-version=7.2-preview.1"
-                                    $svcId = Invoke-AdoRestMethod -Uri $svcIdUri -Method Get -Headers $authorization
-                                    $svcSid = ($svcId.value | Select-Object -First 1).descriptor
-                                    if ($svcSid -like 'Microsoft.TeamFoundation.ServiceIdentity*') {
-                                        $svcScope = $svcSid.Split(';', 2)[1]
-                                        if ($svcScope -like 'Build:*') {
-                                            $scopeParts = $svcScope.Split(':')
-                                            if ($scopeParts.Count -ge 3) {
-                                                $ug = $ugRawDataDumpName = "$projName Build Service ($VSTSMasterAcct)"
-                                            }
-                                            else {
-                                                $ug = $ugRawDataDumpName = "Project Collection Build Service ($VSTSMasterAcct)"
-                                            }
-                                            $groupType = "User"
-                                        }
-                                    }
-                                    Write-Log -Message "Identity wrapper resolved svc subject '$($id.value.subjectDescriptor)' -> '$ug'" -Level 'Info' -FunctionName 'Get-PermissionsByNamespace'
-                                }
-                                catch {
-                                    Write-Log -Message "Service identity resolve via Identity wrapper failed: $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
-                                }
-                            }
-
                             Write-Host "GroupName: $ug"
                         } else {
                             $ErrorMessage = $_.Exception.Message
@@ -1543,61 +1522,35 @@ Function Get-PermissionsByNamespace()
                     }
                 } elseif ($_.value.descriptor -like "Microsoft.TeamFoundation.ServiceIdentity*") {
                     $currentUser = $allSvcUsers | Where-Object { $_.FullDescriptor -eq $currentDescriptor }
-                    if (-not $currentUser) {
-                        # Fallback: project-scoped service identities (e.g. Project Build Service)
-                        # are not in the pre-cached svc.* graph users walk. Resolve via identity API.
-                        try {
-                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
-                            $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
-                            if ($id.value) {
-                                $resolvedName = $id.value.providerDisplayName
-                                # Build Service identities: always resolve from the SID descriptor
-                                # scope. The providerDisplayName format varies (bare GUID, or
-                                # "<GUID> Build Service (<Org>)") so TryParse-based detection is
-                                # unreliable. The SID descriptor scope is authoritative.
-                                $svcScope = $currentDescriptor.Split(';', 2)[1]
-                                if ($svcScope -like 'Build:*') {
-                                    $scopeParts = $svcScope.Split(':')
-                                    if ($scopeParts.Count -ge 3) {
-                                        $resolvedName = "$projName Build Service ($VSTSMasterAcct)"
-                                    }
-                                    else {
-                                        $resolvedName = "Project Collection Build Service ($VSTSMasterAcct)"
-                                    }
-                                }
-                                Write-Log -Message "ServiceIdentity fallback resolved '$currentDescriptor' -> '$resolvedName'" -Level 'Info' -FunctionName 'Get-PermissionsByNamespace'
-                                $currentUser = [PSCustomObject]@{
-                                    SvcUserName = $resolvedName
-                                }
-                            }
-                        }
-                        catch {
-                            Write-Log -Message "ServiceIdentity lookup failed for $currentDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace' -Uri $identUri
-                        }
+                    if ($currentUser) {
+                        $ugRawDataDumpName = $ug = $currentUser.SvcUserName
                     }
-                    if ($currentUser -and $currentUser.SvcUserName) {
-                        $resolvedName = $currentUser.SvcUserName
-                        # Build Service identities: always resolve from the SID descriptor
-                        # scope. The displayName/providerDisplayName format varies (bare
-                        # GUID, "<GUID> Build Service (<Org>)", etc.) so TryParse-based
-                        # detection is unreliable. The SID descriptor scope is authoritative.
+                    else {
+                        # Fallback: service identity not in pre-cached svc.* list. Resolve
+                        # from the descriptor scope directly (no API call needed).
                         $svcScope = $currentDescriptor.Split(';', 2)[1]
                         if ($svcScope -like 'Build:*') {
                             $scopeParts = $svcScope.Split(':')
                             if ($scopeParts.Count -ge 3) {
-                                $resolvedName = "$projName Build Service ($VSTSMasterAcct)"
+                                $ug = "$projName Build Service ($VSTSMasterAcct)"
                             }
                             else {
-                                $resolvedName = "Project Collection Build Service ($VSTSMasterAcct)"
+                                $ug = "Project Collection Build Service ($VSTSMasterAcct)"
                             }
                         }
-                        Write-Log -Message "ServiceIdentity resolved '$($currentUser.SvcUserName)' -> '$resolvedName' (descriptor: $currentDescriptor)" -Level 'Info' -FunctionName 'Get-PermissionsByNamespace'
-                        $ugRawDataDumpName = $ug = $resolvedName
-                    }
-                    else {
-                        $ug = $currentDescriptor
-                        $ugRawDataDumpName = "UnresolvedServiceIdentity"
-                        Write-Log -Message "Unresolved ServiceIdentity: $currentDescriptor" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+                        else {
+                            # Non-Build service identity: try identity API for the name
+                            try {
+                                $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                                $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
+                                $ug = if ($id.value) { $id.value.providerDisplayName } else { $currentDescriptor }
+                            }
+                            catch {
+                                $ug = $currentDescriptor
+                                Write-Log -Message "ServiceIdentity lookup failed for $currentDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace' -Uri $identUri
+                            }
+                        }
+                        $ugRawDataDumpName = $ug
                     }
                     $des = ""
                     Write-Host "User: $ug"
