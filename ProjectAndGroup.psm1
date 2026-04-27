@@ -152,10 +152,13 @@ function Get-GroupMembershipReport(){
         }
     }
 
-    # Index project id -> name for bucketing per-project output
+    # Index project id -> name for bucketing per-project output AND for resolving
+    # Build Service identity names. Must include ALL projects in the org (not just
+    # requested ones) because a Build Service identity from any project can appear
+    # in permissions/membership of the requested project.
     $projectIdToName = @{}
     foreach ($p in $orgProjects.value) {
-        if ($projectIds -contains $p.id) { $projectIdToName[$p.id] = $p.Name }
+        $projectIdToName[$p.id] = $p.Name
     }
 
     # Per-project scoped group fetch. The org-level graph/groups call does not
@@ -384,6 +387,14 @@ function Get-GroupMembershipReport(){
         param($subjectDescriptor, $rawDisplayName)
 
         if ([string]::IsNullOrWhiteSpace($subjectDescriptor)) {
+            # No descriptor available: try resolving a GUID embedded in the
+            # displayName directly against the org-wide project lookup.
+            if ($rawDisplayName -match '^D?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(.*)$') {
+                $embeddedGuid = $Matches[1]
+                if ($projectIdToName.ContainsKey($embeddedGuid)) {
+                    return "$($projectIdToName[$embeddedGuid])$($Matches[2])"
+                }
+            }
             return $rawDisplayName
         }
 
@@ -412,6 +423,14 @@ function Get-GroupMembershipReport(){
                 $projGuidFromScope = $scopeParts[2]
                 if ($projectIdToName.ContainsKey($projGuidFromScope)) {
                     return "$($projectIdToName[$projGuidFromScope]) Build Service ($VSTSMasterAcct)"
+                }
+                # Scope has a project GUID but project not found (deleted?).
+                # Try to resolve GUID in the displayName as fallback.
+                if ($rawDisplayName -match '^D?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(.*)$') {
+                    $embeddedGuid = $Matches[1]
+                    if ($projectIdToName.ContainsKey($embeddedGuid)) {
+                        return "$($projectIdToName[$embeddedGuid])$($Matches[2])"
+                    }
                 }
                 return "Project Build Service ($VSTSMasterAcct)"
             }

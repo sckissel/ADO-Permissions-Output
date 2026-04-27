@@ -667,6 +667,13 @@ function Get-SecuritybyGroupByNamespace()
     $orgUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?api-version=7.2-preview.1"
     $orgProjects = Invoke-AdoRestMethod -uri $orgUri -Method Get -Headers $authorization 
 
+    # Build org-wide project ID -> name lookup for resolving Build Service identity
+    # names. The descriptor scope contains the project GUID; we need the human name.
+    $allProjectIdToName = @{}
+    foreach ($p in $orgProjects.value) {
+        $allProjectIdToName[$p.id] = $p.Name
+    }
+
     if( $getAllProjects -eq "True")
     {
         $groups = $allGroups
@@ -786,17 +793,34 @@ function Get-SecuritybyGroupByNamespace()
                 $svcUserDescriptor = Get-DescriptorFromGroup -dscriptor $userFound.descriptor
                 $dscrpt = "Microsoft.TeamFoundation.ServiceIdentity;" + $svcUserDescriptor
                 $svcUserInfo = Add-svcUserInfo -object $userFound -project -$projectDetail.Name -fulldescriptor $dscrpt
-                # api-version 7.2 returns the bare project GUID as displayName for
-                # Build Service identities (6.0 returned the friendly name). Detect
-                # that from the descriptor scope and fix it once here so every
-                # downstream consumer gets the friendly name automatically.
+                # api-version 7.2 may return a GUID-form displayName for Build Service
+                # identities. Resolve the friendly name from the descriptor scope using
+                # the org-wide project lookup ($allProjectIdToName) - NOT $projectDetail.name,
+                # which is the current iteration project and would stamp every svc user
+                # with the wrong name.
                 if ($svcUserDescriptor -like 'Build:*') {
                     $scopeParts = $svcUserDescriptor.Split(':')
                     if ($scopeParts.Count -ge 3) {
-                        $svcUserInfo.SvcUserName = "$($projectDetail.name) Build Service ($VSTSMasterAcct)"
+                        $svcProjGuid = $scopeParts[2]
+                        if ($allProjectIdToName.ContainsKey($svcProjGuid)) {
+                            $svcUserInfo.SvcUserName = "$($allProjectIdToName[$svcProjGuid]) Build Service ($VSTSMasterAcct)"
+                        }
+                        # else: displayName already has the best name the API knows
+                        # (e.g. "D<guid> Build Service (org)" for deleted projects)
                     }
                     else {
                         $svcUserInfo.SvcUserName = "Project Collection Build Service ($VSTSMasterAcct)"
+                    }
+                }
+                # Secondary check: if the displayName still contains a bare GUID or
+                # "D<guid>" pattern followed by " Build Service", try to resolve it
+                # from the projects list. Covers customer orgs where the API returns
+                # the project GUID as the displayName directly.
+                if ($svcUserInfo.SvcUserName -match '^D?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(.*)$') {
+                    $embeddedGuid = $Matches[1]
+                    if ($allProjectIdToName.ContainsKey($embeddedGuid)) {
+                        $suffix = $Matches[2]  # e.g. " Build Service (skdevorg)"
+                        $svcUserInfo.SvcUserName = "$($allProjectIdToName[$embeddedGuid])$suffix"
                     }
                 }
                 $allSvcUsers += $svcUserInfo
@@ -1527,12 +1551,18 @@ Function Get-PermissionsByNamespace()
                     }
                     else {
                         # Fallback: service identity not in pre-cached svc.* list. Resolve
-                        # from the descriptor scope directly (no API call needed).
+                        # from the descriptor scope + org-wide project lookup.
                         $svcScope = $currentDescriptor.Split(';', 2)[1]
                         if ($svcScope -like 'Build:*') {
                             $scopeParts = $svcScope.Split(':')
                             if ($scopeParts.Count -ge 3) {
-                                $ug = "$projName Build Service ($VSTSMasterAcct)"
+                                $svcProjGuid = $scopeParts[2]
+                                if ($allProjectIdToName.ContainsKey($svcProjGuid)) {
+                                    $ug = "$($allProjectIdToName[$svcProjGuid]) Build Service ($VSTSMasterAcct)"
+                                }
+                                else {
+                                    $ug = "$projName Build Service ($VSTSMasterAcct)"
+                                }
                             }
                             else {
                                 $ug = "Project Collection Build Service ($VSTSMasterAcct)"
