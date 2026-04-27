@@ -440,6 +440,14 @@ function Get-GroupMembershipReport(){
             $matchedUser = $allUsers | Where-Object { $_.descriptor -eq $item.memberDescriptor }
             if ($matchedUser) {
                 $entInfo = $entitlementLookup[$matchedUser.principalName.ToLower()]
+                # Service identities (svc.*) such as the Project Build Service have
+                # graph/users displayName set to the bare project GUID. Resolve to the
+                # friendly "<Project> Build Service (<Org>)" form before emit. Mirrors
+                # the fallback path below.
+                $resolvedDisplay = $matchedUser.displayName
+                if ($matchedUser.descriptor -like 'svc.*') {
+                    $resolvedDisplay = Resolve-ServiceIdentityName -subjectDescriptor $matchedUser.descriptor -rawDisplayName $matchedUser.displayName
+                }
                 $details = [PSCustomObject]@{
                     ProjectName      = $projectDisplayName
                     GroupName        = $parentName
@@ -447,7 +455,7 @@ function Get-GroupMembershipReport(){
                     GroupDescription = $groupDescription
                     Relationship     = "Member"
                     MemberType       = ($matchedUser.subjectKind.Substring(0,1).ToUpper() + $matchedUser.subjectKind.Substring(1).ToLower())
-                    DisplayName      = $matchedUser.displayName
+                    DisplayName      = $resolvedDisplay
                     MailAddress      = $matchedUser.mailAddress
                     PrincipalName    = $matchedUser.principalName
                     Origin           = $matchedUser.origin
