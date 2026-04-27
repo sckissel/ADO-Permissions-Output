@@ -361,6 +361,9 @@ function Get-TokenData {
             catch {
                 Write-Log -Message "Error: $($_.Exception.Message)" -Level 'Error' -FunctionName $MyInvocation.MyCommand.Name
             }
+            if ($global:allQueries.Count -lt 1) {
+                return "N/A"
+            }
             return $global:allQueries
             
         }
@@ -379,6 +382,9 @@ function Get-TokenData {
                 if ($iteration.hasChildren -eq $true) {
                     Get-IterationChildren -object $iteration.children
                 }
+            }
+            if ($global:allIterations.Count -lt 1) {
+                return "N/A"
             }
             return $global:allIterations
         }
@@ -416,6 +422,9 @@ function Get-TokenData {
                 if ($area.hasChildren -eq $true) {
                     Get-AreaChildren -object $area.children
                 }
+            }
+            if ($global:allareas.Count -lt 1) {
+                return "N/A"
             }
             return $global:allareas
         }
@@ -810,6 +819,7 @@ function Get-SecuritybyGroupByNamespace()
             Write-Log -Message "Namespace: $($namespace.Name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
             # Get the details for each token (Name, etc) to be matched and output
             $tokenDetails = Get-TokenData -userParams $userParams -projectInfo $projectDetail -Namespace $namespace -Teams $allteams.value
+            if ($null -eq $tokenDetails) { $tokenDetails = "N/A" }
             # Get the permissions for the namespace
             $nsPermissions = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct
             if ($nsPermissions) {
