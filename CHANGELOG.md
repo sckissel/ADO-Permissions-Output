@@ -3,6 +3,44 @@ title: Changelog
 description: Version history and notable changes for ADO Permissions Output
 ---
 
+## v1.1.0 (2026-04-27)
+
+### Fixed
+
+* **Build Service GUID display name resolution.** The `graph/users` API at
+  `api-version=7.2` returns the project GUID (or `D<guid>`) as `displayName`
+  for project-scoped Build Service identities. The old code (api-version 6.0)
+  received the friendly `"<Project> Build Service (<Org>)"` name directly.
+  Resolution now uses `domain` + `principalName` fields from the graph/users
+  response to look up the project name in an org-wide project list. Affects
+  both `SecurityHelper.psm1` (permissions report) and `ProjectAndGroup.psm1`
+  (membership report) across all code paths: pre-cached `allSvcUsers`,
+  fallback `ServiceIdentity` handler, and `Resolve-ServiceIdentityName`.
+
+* **Null tokenData crash on 404 namespaces.** When `Get-TokenData` returned an
+  empty array for CSS, Iteration, or WorkItemQueryFolders namespaces (e.g.,
+  project with no areas), PowerShell unrolled `@()` to `$null` at the call
+  site, crashing the mandatory `-tokenData` parameter binding on
+  `Get-PermissionsByNamespace`. Added `if ($global:all*.Count -lt 1) { return "N/A" }`
+  guards in `Get-TokenData` and a defensive `if ($null -eq $tokenDetails) { $tokenDetails = "N/A" }`
+  at the call site.
+
+### Changed
+
+* **Output branch strategy.** Pipeline now pushes output to an orphan `output`
+  branch instead of force-pushing to the source branch. Prior runs are preserved
+  as commit history on the output branch. The Build Service identity now requires
+  **Create branch** permission in addition to **Contribute** on the repository.
+
+* **Org-wide project lookup.** Both modules now build an org-wide
+  `$allProjectIdToName` / `$projectIdToName` hashtable from all projects in the
+  organization (not just the requested project filter). This enables correct
+  Build Service name resolution for cross-project identities.
+
+* `ProjectAndGroup.psm1` `Resolve-ServiceIdentityName` simplified: no longer
+  calls the identity API. Uses in-memory graph user lookup and displayName GUID
+  regex as fallback.
+
 ## v1.0.2 (2026-04-24)
 
 ### Fixed

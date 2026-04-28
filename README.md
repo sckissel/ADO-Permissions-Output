@@ -49,8 +49,9 @@ back to the repository for version-tracked audit history.
 - The PAT user must have sufficient permissions in the target organization. Project
   Collection Administrator (PCA) access ensures complete coverage, but the script
   handles permission errors gracefully for non-PCA accounts.
-- For pipeline execution: the **Build Service** identity needs **Contribute** permission
-  on the target repository (required for the git push step that commits output back)
+- For pipeline execution: the **Build Service** identity needs **Contribute** and
+  **Create branch** permissions on the target repository (required for pushing output
+  to the `output` branch)
 - No Azure AD/Entra app registration, managed identity, or additional module
   installation is required. All API calls use PAT-based Basic authentication.
 
@@ -120,11 +121,10 @@ The included `main.yml` defines an Azure Pipelines definition that:
    project's Library. Add a variable named `secretPAT` containing your PAT
    token and mark it as secret.
 2. Create a pipeline pointing to `main.yml` in this repository.
-3. Ensure the **Build Service** identity has **Contribute** permission on this
-   repository (required for the git push step).
-4. If pushing to a protected branch (main/master), either add a branch policy
-   exception for the Build Service or configure the pipeline to push to a
-   different branch.
+3. Ensure the **Build Service** identity has **Contribute** and **Create branch**
+   permissions on this repository (required for pushing to the `output` branch).
+4. If the `output` branch has branch policies, add a policy exception for the
+   Build Service identity.
 5. The pipeline defaults to `vmImage: 'windows-latest'` (Microsoft-hosted agent).
    If your organization uses self-hosted agents or VMSS scale-set pools, update
    the `pool` section in `main.yml` to match your environment (e.g.,
