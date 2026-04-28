@@ -41,7 +41,7 @@ parameters:
   - name: CommitOutput
     type: boolean
     default: true
-    displayName: 'Commit output back to the source repo (uncheck for artifact-only runs)'
+    displayName: 'Commit output to the output branch (uncheck for artifact-only runs)'
   - name: GitAuthorEmail
     type: string
     default: 'pipeline@noreply.dev.azure.com'
