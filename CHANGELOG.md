@@ -7,15 +7,17 @@ description: Version history and notable changes for ADO Permissions Output
 
 ### Fixed
 
-* **Build Service GUID display name resolution.** The `graph/users` API at
-  `api-version=7.2` returns the project GUID (or `D<guid>`) as `displayName`
-  for project-scoped Build Service identities. The old code (api-version 6.0)
-  received the friendly `"<Project> Build Service (<Org>)"` name directly.
-  Resolution now uses `domain` + `principalName` fields from the graph/users
-  response to look up the project name in an org-wide project list. Affects
-  both `SecurityHelper.psm1` (permissions report) and `ProjectAndGroup.psm1`
-  (membership report) across all code paths: pre-cached `allSvcUsers`,
-  fallback `ServiceIdentity` handler, and `Resolve-ServiceIdentityName`.
+* **Build Service GUID display name resolution.** Some Azure DevOps
+  organizations return the project GUID (or `D<guid>`) as `displayName` for
+  project-scoped Build Service identities instead of the friendly
+  `"<Project> Build Service (<Org>)"` form. The previous code relied on
+  `displayName` being correct, which was not reliable across all orgs and API
+  versions. Resolution now uses the `domain` and `principalName` fields from
+  the `graph/users` response to look up the project name in an org-wide
+  project list, which is always reliable. Affects both `SecurityHelper.psm1`
+  (permissions report) and `ProjectAndGroup.psm1` (membership report) across
+  all code paths: pre-cached `allSvcUsers`, fallback `ServiceIdentity`
+  handler, and `Resolve-ServiceIdentityName`.
 
 * **Null tokenData crash on 404 namespaces.** When `Get-TokenData` returned an
   empty array for CSS, Iteration, or WorkItemQueryFolders namespaces (e.g.,

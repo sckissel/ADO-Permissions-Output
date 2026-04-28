@@ -112,7 +112,8 @@ The included `main.yml` defines an Azure Pipelines definition that:
 
 1. Runs `SecurityMain.ps1` with parameters from the "Run pipeline" UI
 2. Optionally publishes output as a pipeline artifact
-3. Commits the JSON output back to the repository for audit history
+3. Commits the JSON output to a dedicated orphan `output` branch, preserving
+   prior run history as commits (the source branch is never modified)
 4. Tags each run for point-in-time retrieval (e.g., `run-20260331.1`)
 
 #### Setup
