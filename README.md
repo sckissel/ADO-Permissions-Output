@@ -138,16 +138,29 @@ When running the pipeline manually, the "Run pipeline" dialog presents these opt
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `VSTSMasterAcct` | string | (required) | Azure DevOps organization name |
-| `ProjectName` | string | (required) | Target project name |
+| `ProjectName` | string | (required) | Target project name (comma-separated for multiple) |
 | `AllProjects` | boolean | `false` | Extract all projects in the organization |
+| `IncludePermissions` | boolean | `true` | Generate namespace/ACL permissions extract |
 | `IncludeMembership` | boolean | `false` | Generate group membership report |
 | `RecurseAADGroups` | boolean | `false` | Recursively resolve AAD group members |
 | `OutputFormat` | string | `JSON` | Output format: `JSON`, `CSV`, or `Both` |
 | `PublishArtifact` | boolean | `false` | Publish output as a pipeline artifact |
+| `CommitOutput` | boolean | `true` | Commit output to the `output` branch (uncheck for artifact-only runs) |
 | `GitAuthorEmail` | string | `pipeline@noreply.dev.azure.com` | Email used for git commits of output files |
+
+At least one of `CommitOutput` or `PublishArtifact` must be enabled; the pipeline
+fails fast if both are disabled since output would be lost when the agent is reclaimed.
 
 The PAT is stored securely in the `ADOPermissions` variable group and is not
 exposed as a parameter.
+
+#### Output Branch
+
+When `CommitOutput` is enabled, the pipeline pushes output to a dedicated orphan
+branch named `output`. On the first run this branch is created automatically. On
+subsequent runs, the pipeline fetches the existing branch and commits on top of it,
+so each run's output is preserved as a separate commit. The source branch (`main`)
+is never modified by the pipeline.
 
 ### Local / Manual Execution
 
