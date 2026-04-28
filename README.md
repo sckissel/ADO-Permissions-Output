@@ -49,8 +49,9 @@ back to the repository for version-tracked audit history.
 - The PAT user must have sufficient permissions in the target organization. Project
   Collection Administrator (PCA) access ensures complete coverage, but the script
   handles permission errors gracefully for non-PCA accounts.
-- For pipeline execution: the **Build Service** identity needs **Contribute** permission
-  on the target repository (required for the git push step that commits output back)
+- For pipeline execution: the **Build Service** identity needs **Contribute** and
+  **Create branch** permissions on the target repository (required for pushing output
+  to the `output` branch)
 - No Azure AD/Entra app registration, managed identity, or additional module
   installation is required. All API calls use PAT-based Basic authentication.
 
@@ -111,7 +112,8 @@ The included `main.yml` defines an Azure Pipelines definition that:
 
 1. Runs `SecurityMain.ps1` with parameters from the "Run pipeline" UI
 2. Optionally publishes output as a pipeline artifact
-3. Commits the JSON output back to the repository for audit history
+3. Commits the JSON output to a dedicated orphan `output` branch, preserving
+   prior run history as commits (the source branch is never modified)
 4. Tags each run for point-in-time retrieval (e.g., `run-20260331.1`)
 
 #### Setup
@@ -120,11 +122,10 @@ The included `main.yml` defines an Azure Pipelines definition that:
    project's Library. Add a variable named `secretPAT` containing your PAT
    token and mark it as secret.
 2. Create a pipeline pointing to `main.yml` in this repository.
-3. Ensure the **Build Service** identity has **Contribute** permission on this
-   repository (required for the git push step).
-4. If pushing to a protected branch (main/master), either add a branch policy
-   exception for the Build Service or configure the pipeline to push to a
-   different branch.
+3. Ensure the **Build Service** identity has **Contribute** and **Create branch**
+   permissions on this repository (required for pushing to the `output` branch).
+4. If the `output` branch has branch policies, add a policy exception for the
+   Build Service identity.
 5. The pipeline defaults to `vmImage: 'windows-latest'` (Microsoft-hosted agent).
    If your organization uses self-hosted agents or VMSS scale-set pools, update
    the `pool` section in `main.yml` to match your environment (e.g.,
@@ -137,16 +138,29 @@ When running the pipeline manually, the "Run pipeline" dialog presents these opt
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `VSTSMasterAcct` | string | (required) | Azure DevOps organization name |
-| `ProjectName` | string | (required) | Target project name |
+| `ProjectName` | string | (required) | Target project name (comma-separated for multiple) |
 | `AllProjects` | boolean | `false` | Extract all projects in the organization |
+| `IncludePermissions` | boolean | `true` | Generate namespace/ACL permissions extract |
 | `IncludeMembership` | boolean | `false` | Generate group membership report |
 | `RecurseAADGroups` | boolean | `false` | Recursively resolve AAD group members |
 | `OutputFormat` | string | `JSON` | Output format: `JSON`, `CSV`, or `Both` |
 | `PublishArtifact` | boolean | `false` | Publish output as a pipeline artifact |
+| `CommitOutput` | boolean | `true` | Commit output to the `output` branch (uncheck for artifact-only runs) |
 | `GitAuthorEmail` | string | `pipeline@noreply.dev.azure.com` | Email used for git commits of output files |
+
+At least one of `CommitOutput` or `PublishArtifact` must be enabled; the pipeline
+fails fast if both are disabled since output would be lost when the agent is reclaimed.
 
 The PAT is stored securely in the `ADOPermissions` variable group and is not
 exposed as a parameter.
+
+#### Output Branch
+
+When `CommitOutput` is enabled, the pipeline pushes output to a dedicated orphan
+branch named `output`. On the first run this branch is created automatically. On
+subsequent runs, the pipeline fetches the existing branch and commits on top of it,
+so each run's output is preserved as a separate commit. The source branch (`main`)
+is never modified by the pipeline.
 
 ### Local / Manual Execution
 

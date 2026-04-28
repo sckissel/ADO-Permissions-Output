@@ -18,6 +18,8 @@ param (
     [string]$allProjects,
     [Parameter(Mandatory=$true, HelpMessage="Enter the root working path for the output files")]
     [string]$DirRoot,
+    [Parameter(Mandatory=$false, HelpMessage="Set to False to skip the permissions/ACL extract (default True)")]
+    [string]$IncludePermissions = "True",
     [Parameter(Mandatory=$false, HelpMessage="Set to True to include group membership report")]
     [string]$IncludeMembership,
     [Parameter(Mandatory=$false, HelpMessage="Set to True to recursively resolve members of AAD groups nested in ADO groups")]
@@ -50,9 +52,19 @@ Initialize-Log -LogFilePath $logFile
 Write-Log -Message "=== ADO Permissions Extraction Started ===" -Level 'Info' -FunctionName 'SecurityMain'
 Write-Log -Message "Organization: $VSTSMasterAcct | Project: $projectName | AllProjects: $allProjects" -Level 'Info' -FunctionName 'SecurityMain'
 
+# Fail fast if nothing is requested
+if ($IncludePermissions -ne "True" -and $IncludeMembership -ne "True") {
+    Write-Log -Message "Both IncludePermissions and IncludeMembership are False; nothing to do." -Level 'Error' -FunctionName 'SecurityMain'
+    throw "At least one of IncludePermissions or IncludeMembership must be True."
+}
+
 # Get all groups and their permissions
-Write-Log -Message "Calling 'Get-SecurityGroupByNamespace'" -Level 'Info' -FunctionName 'SecurityMain'
-Get-SecuritybyGroupByNamespace -userParams $userParameters  -rawDataDump $userParameters.rawDataFile  -getAllProjects $allProjects  -outFileName $userParameters.GroupFileName -PAT $PAT -VSTSMasterAcct $VSTSMasterAcct -projectName $projectName -dirRoot $DirRoot -OutputFormat $OutputFormat
+if ($IncludePermissions -eq "True") {
+    Write-Log -Message "Calling 'Get-SecurityGroupByNamespace'" -Level 'Info' -FunctionName 'SecurityMain'
+    Get-SecuritybyGroupByNamespace -userParams $userParameters -rawDataDump $userParameters.rawDataFile -getAllProjects $allProjects -outFileName $userParameters.GroupFileName -PAT $PAT -VSTSMasterAcct $VSTSMasterAcct -projectName $projectName -dirRoot $DirRoot -OutputFormat $OutputFormat
+} else {
+    Write-Log -Message "Skipping namespace permissions extract (IncludePermissions=False)" -Level 'Info' -FunctionName 'SecurityMain'
+}
 
 # Optionally get group membership report
 if ($IncludeMembership -eq "True") {

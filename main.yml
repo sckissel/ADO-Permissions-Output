@@ -18,6 +18,10 @@ parameters:
     type: boolean
     default: false
     displayName: 'Include group membership report'
+  - name: IncludePermissions
+    type: boolean
+    default: true
+    displayName: 'Include namespace/ACL permissions extract'
   - name: RecurseAADGroups
     type: boolean
     default: false
@@ -34,6 +38,10 @@ parameters:
     type: boolean
     default: false
     displayName: 'Publish output as pipeline artifact'
+  - name: CommitOutput
+    type: boolean
+    default: true
+    displayName: 'Commit output to the output branch (uncheck for artifact-only runs)'
   - name: GitAuthorEmail
     type: string
     default: 'pipeline@noreply.dev.azure.com'
@@ -48,6 +56,12 @@ jobs:
   pool:
     vmImage: 'windows-latest'
   steps:
+  - ${{ if and(eq(parameters.CommitOutput, false), eq(parameters.PublishArtifact, false)) }}:
+    - script: |
+        echo "##vso[task.logissue type=error]At least one of CommitOutput or PublishArtifact must be true; otherwise pipeline output is discarded when the agent is reclaimed."
+        exit 1
+      displayName: 'Validate output retention'
+
   - checkout: self
     persistCredentials: true
 
@@ -55,7 +69,7 @@ jobs:
     displayName: 'Extract ADO permissions'
     inputs:
       filePath: './SecurityMain.ps1'
-      arguments: '-PAT "$(secretPAT)" -VSTSMasterAcct "${{ parameters.VSTSMasterAcct }}" -projectName "${{ parameters.ProjectName }}" -AllProjects "${{ parameters.AllProjects }}" -DirRoot "$(System.DefaultWorkingDirectory)/Security" -IncludeMembership "${{ parameters.IncludeMembership }}" -RecurseAADGroups "${{ parameters.RecurseAADGroups }}" -OutputFormat "${{ parameters.OutputFormat }}"'
+      arguments: '-PAT "$(secretPAT)" -VSTSMasterAcct "${{ parameters.VSTSMasterAcct }}" -projectName "${{ parameters.ProjectName }}" -AllProjects "${{ parameters.AllProjects }}" -DirRoot "$(System.DefaultWorkingDirectory)/Security" -IncludePermissions "${{ parameters.IncludePermissions }}" -IncludeMembership "${{ parameters.IncludeMembership }}" -RecurseAADGroups "${{ parameters.RecurseAADGroups }}" -OutputFormat "${{ parameters.OutputFormat }}"'
       pwsh: true
 
   - ${{ if eq(parameters.PublishArtifact, true) }}:
@@ -66,29 +80,48 @@ jobs:
         artifact: 'ADOPermissionsOutput'
         publishLocation: 'pipeline'
 
-  - powershell: |
-        write-host "###########################################"
-        write-host "Pushing output to ADOPermissionsOutput repo"
-        write-host "###########################################"
-        $executionDateTimeInternationalReadable = get-date -format "dd-MMM-yyyy HH:mm:ss"
-        $currentTimeZone = (Get-TimeZone).Id
-        git config --global user.email "${{ parameters.GitAuthorEmail }}"
-        $PipelineInfo = "Pipeline: '$(Build.DefinitionName)' 'rev $(Build.BuildNumber)' (Project: $([uri]::EscapeDataString("$(System.TeamProject)")); Repository: $(Build.Repository.Name); Branch: $(Build.SourceBranchName) Commit: $(Build.SourceVersion))"
-        git config --global user.name "$PipelineInfo"
-        git checkout -B $(Build.SourceBranchName) HEAD
-        git add --force Security/
-        git commit -m "AzDOSec $executionDateTimeInternationalReadable ($currentTimeZone)"
-        git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push origin HEAD:$(Build.SourceBranchName)
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Git push failed (exit code $LASTEXITCODE). Ensure the Build Service identity has Contribute permission on this repository and branch policies allow direct pushes."
-            if ('${{ parameters.PublishArtifact }}' -ne 'True') {
-                Write-Error "Output was not published as an artifact either. Enable PublishArtifact parameter to preserve output when git push fails."
-                exit 1
-            }
-        }
-        git tag "run-$(Build.BuildNumber)" -m "AzDOSec $executionDateTimeInternationalReadable ($currentTimeZone)"
-        git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push origin "run-$(Build.BuildNumber)"
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Git tag push failed. Tags require GenericContribute permission on the repository."
-        }
-    displayName: 'Commit and push output'
+  - ${{ if eq(parameters.CommitOutput, true) }}:
+    - powershell: |
+          write-host "###########################################"
+          write-host "Pushing output to ADOPermissionsOutput repo"
+          write-host "###########################################"
+          $executionDateTimeInternationalReadable = get-date -format "dd-MMM-yyyy HH:mm:ss"
+          $currentTimeZone = (Get-TimeZone).Id
+          git config --global user.email "${{ parameters.GitAuthorEmail }}"
+          $PipelineInfo = "Pipeline: '$(Build.DefinitionName)' 'rev $(Build.BuildNumber)' (Project: $([uri]::EscapeDataString("$(System.TeamProject)")); Repository: $(Build.Repository.Name); Branch: $(Build.SourceBranchName) Commit: $(Build.SourceVersion))"
+          git config --global user.name "$PipelineInfo"
+          $outputBranch = "output"
+          # Try to fetch the existing output branch; if it exists, check it out
+          # so new files are added on top of prior runs (preserving history).
+          $fetchOk = $true
+          try {
+              git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" fetch origin "refs/heads/${outputBranch}" 2>&1 | Out-Null
+              if ($LASTEXITCODE -ne 0) { $fetchOk = $false }
+          }
+          catch { $fetchOk = $false }
+
+          if ($fetchOk) {
+              git checkout -B $outputBranch FETCH_HEAD
+          }
+          else {
+              # First run: create an orphan branch with no shared history
+              Write-Host "Output branch does not exist yet — creating orphan branch '$outputBranch'"
+              git checkout --orphan $outputBranch
+              git rm -rf --cached . | Out-Null
+          }
+          git add --force Security/
+          git commit -m "AzDOSec $executionDateTimeInternationalReadable ($currentTimeZone)"
+          git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push origin "HEAD:refs/heads/$outputBranch"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Git push failed (exit code $LASTEXITCODE). Ensure the Build Service identity has Contribute permission on this repository and branch policies allow direct pushes."
+              if ('${{ parameters.PublishArtifact }}' -ne 'True') {
+                  Write-Error "Output was not published as an artifact either. Enable PublishArtifact parameter to preserve output when git push fails."
+                  exit 1
+              }
+          }
+          git tag "run-$(Build.BuildNumber)" -m "AzDOSec $executionDateTimeInternationalReadable ($currentTimeZone)"
+          git -c http.extraheader="AUTHORIZATION: bearer $(System.AccessToken)" push origin "run-$(Build.BuildNumber)"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Git tag push failed. Tags require GenericContribute permission on the repository."
+          }
+      displayName: 'Commit and push output'

@@ -207,7 +207,7 @@ function Get-QueryFolderChildren {
         $userParams, $projectInfo, $authorization, $childQuery
     )
     try {
-        $queryChildUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/_apis/wit/queries/" + $childQuery.id + '?$depth=1&api-version=6.0'
+        $queryChildUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/_apis/wit/queries/" + $childQuery.id + '?$depth=1&api-version=7.2-preview.1'
         $queryChildren = Invoke-AdoRestMethod -uri $queryChildUri -Method Get -Headers $authorization
         foreach ($subChildQuery in $queryChildren.children) {
             $global:allQueries += $subChildQuery
@@ -262,7 +262,7 @@ function Get-TokenData {
             $allDashboards = @()
             try {
                 # Get project Dashboards
-                $prjDashboardUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/_apis/dashboard/dashboards?api-version=5.1-preview.2"
+                $prjDashboardUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/_apis/dashboard/dashboards?api-version=7.2-preview.2"
                 $prjDashboards = Invoke-AdoRestMethod -Uri $prjDashboardUri -Method Get -Headers $authorization
                 foreach ($db in $prjDashboards.dashboardEntries) {
                     $dbObj = New-Object PSObject -Property @{
@@ -281,7 +281,7 @@ function Get-TokenData {
             foreach ($prjTeam in $prjTeams) {
                 try {
                     # Get all project Team Dashboards
-                    $teamsDashboardUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/" + $prjTeam.id + "/_apis/dashboard/dashboards?api-version=5.1-preview.2"
+                    $teamsDashboardUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/" + $prjTeam.id + "/_apis/dashboard/dashboards?api-version=7.2-preview.2"
                     $teamDashboards = Invoke-AdoRestMethod -Uri $teamsDashboardUri -Method Get -Headers $authorization
                     foreach ($db in $teamDashboards.dashboardEntries) {
                         $dbObj = New-Object PSObject -Property @{
@@ -305,7 +305,7 @@ function Get-TokenData {
         'Build' {
             try {
                 # Get project Build definitions
-                $prjBuildsUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/_apis/build/definitions?api-version=5.1"
+                $prjBuildsUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + "/_apis/build/definitions?api-version=7.2-preview.1"
                 $prjBuilds = Invoke-AdoRestMethod -uri $prjBuildsUri -Method Get -Headers $authorization
             } catch {
                 Write-Log -Message "Error: $($_.Exception.Message)" -Level 'Error' -FunctionName $MyInvocation.MyCommand.Name
@@ -350,7 +350,7 @@ function Get-TokenData {
             $global:allQueries = @()
             try {
                 # Get Shared Queries root folder
-                $queryFolderUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/wit/queries?api-version=6.0'
+                $queryFolderUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/wit/queries?api-version=7.2-preview.1'
                 $queryFolders = Invoke-AdoRestMethod -uri $queryFolderUri -Method Get -Headers $authorization
                 $baseFolder = $queryFolders.value | Where-Object { $_.name -eq "Shared Queries"}
                 $global:allQueries += $baseFolder
@@ -361,13 +361,16 @@ function Get-TokenData {
             catch {
                 Write-Log -Message "Error: $($_.Exception.Message)" -Level 'Error' -FunctionName $MyInvocation.MyCommand.Name
             }
+            if ($global:allQueries.Count -lt 1) {
+                return "N/A"
+            }
             return $global:allQueries
             
         }
         'Iteration' {
             $global:allIterations = @()
             try {
-                $iterationUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/wit/classificationnodes/iterations?$depth=20&errorPolicy=omit&api-version=6.0'
+                $iterationUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/wit/classificationnodes/iterations?$depth=20&errorPolicy=omit&api-version=7.2-preview.1'
                 $iterations = Invoke-AdoRestMethod -uri $iterationUri -Method Get -Headers $authorization
             }
             catch {
@@ -380,11 +383,14 @@ function Get-TokenData {
                     Get-IterationChildren -object $iteration.children
                 }
             }
+            if ($global:allIterations.Count -lt 1) {
+                return "N/A"
+            }
             return $global:allIterations
         }
         'MetaTask' {
             try {
-                $metaTaskUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/taskgroups?api-version=6.0-preview.1'
+                $metaTaskUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/taskgroups?api-version=7.2-preview.1'
                 $metaTasks = Invoke-AdoRestMethod -uri $metaTaskUri -Method Get -Headers $authorization
             }
             catch {
@@ -404,7 +410,7 @@ function Get-TokenData {
         'CSS' { # Area Paths
             $global:allareas = @()
             try {
-                $areaUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/wit/classificationnodes/areas?$depth=20&errorPolicy=omit&api-version=6.0'
+                $areaUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/wit/classificationnodes/areas?$depth=20&errorPolicy=omit&api-version=7.2-preview.1'
                 $areas = Invoke-AdoRestMethod -uri $areaUri -Method Get -Headers $authorization
             }
             catch {
@@ -417,6 +423,9 @@ function Get-TokenData {
                     Get-AreaChildren -object $area.children
                 }
             }
+            if ($global:allareas.Count -lt 1) {
+                return "N/A"
+            }
             return $global:allareas
         }
         'EventSubscriber' {
@@ -427,7 +436,7 @@ function Get-TokenData {
         }
         'Environment' {
             try {
-                $environmentUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/environments?api-version=6.0-preview.1'
+                $environmentUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/environments?api-version=7.2-preview.1'
                 $environments = Invoke-AdoRestMethod -uri $environmentUri -Method Get -Headers $authorization
             }
             catch {
@@ -444,7 +453,7 @@ function Get-TokenData {
         'Library' {
             $libraryTokens = @()
             try {
-                $libraryUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/variablegroups?api-version=6.0-preview.2'
+                $libraryUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/variablegroups?api-version=7.2-preview.2'
                 $libraries = Invoke-AdoRestMethod -uri $libraryUri -Method Get -Headers $authorization
                 $libraryTokens += $libraries.value
             }
@@ -452,7 +461,7 @@ function Get-TokenData {
                 Write-Log -Message "Error: $($_.Exception.Message)" -Level 'Error' -FunctionName $MyInvocation.MyCommand.Name
             }
             try {
-                $secureFilesUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/securefiles?api-version=5.0-preview.1'
+                $secureFilesUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/distributedtask/securefiles?api-version=7.2-preview.1'
                 $secureFiles = Invoke-AdoRestMethod -uri $secureFilesUri -Method Get -Headers $authorization
                 $libraryTokens += $secureFiles.value
             }
@@ -471,7 +480,7 @@ function Get-TokenData {
         }
         'Process' {
             try {
-                $processUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + '/_apis/work/processes?api-version=6.0-preview.2'
+                $processUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + '/_apis/work/processes?api-version=7.2-preview.2'
                 $processes = Invoke-AdoRestMethod -uri $processUri -Method Get -Headers $authorization
             }
             catch {
@@ -481,7 +490,7 @@ function Get-TokenData {
         }
         'Plan' {
             try {
-                $plansUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/work/plans?api-version=6.0'
+                $plansUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/work/plans?api-version=7.2-preview.1'
                 $plans = Invoke-AdoRestMethod -uri $plansUri -Method Get -Headers $authorization
             }
             catch {
@@ -503,7 +512,7 @@ function Get-TokenData {
         }
         'ServiceEndpoints' {
             try {
-                $serviceEndpointsUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/serviceendpoint/endpoints?api-version=6.0-preview.4'
+                $serviceEndpointsUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/" + $projectInfo.name + '/_apis/serviceendpoint/endpoints?api-version=7.2-preview.4'
                 $serviceEndpoints = Invoke-AdoRestMethod -uri $serviceEndpointsUri -Method Get -Headers $authorization
             }
             catch {
@@ -532,7 +541,7 @@ function Get-TokenData {
         }
         'DistributedTask' {
             try {
-                $distributedTaskUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/distributedtask/pools?api-version=6.0"
+                $distributedTaskUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/distributedtask/pools?api-version=7.2-preview.1"
                 $distributedTasks = Invoke-AdoRestMethod -uri $distributedTaskUri -Method Get -Headers $authorization
             }
             catch {
@@ -552,7 +561,7 @@ function Get-TokenData {
         'ReleaseManagement' {
             if ($namespace.namespaceId -eq 'c788c23e-1b46-4162-8f5e-d7585343b5de') {
                 try {
-                    $releaseManagementUri = $userParams.HTTP_preFix + "://vsrm.dev.azure.com/" + $VSTSMasterAcct + "/"  + $projectInfo.name + "/_apis/release/definitions?api-version=6.0"
+                    $releaseManagementUri = $userParams.HTTP_preFix + "://vsrm.dev.azure.com/" + $VSTSMasterAcct + "/"  + $projectInfo.name + "/_apis/release/definitions?api-version=7.2-preview.4"
                     $releaseManagement = Invoke-AdoRestMethod -uri $releaseManagementUri -Method Get -Headers $authorization
                 }
                 catch {
@@ -617,17 +626,17 @@ function Get-SecuritybyGroupByNamespace()
 
     # get list of all security namespaces for organization
     # https://docs.microsoft.com/en-us/rest/api/azure/devops/security/security%20namespaces/query?view=azure-devops-rest-6.1
-    # GET https://dev.azure.com/{organization}/_apis/securitynamespaces/{securityNamespaceId}?api-version=6.1-preview.1
-    $nsUri = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/securitynamespaces?api-version=6.1-preview.1"
+    # GET https://dev.azure.com/{organization}/_apis/securitynamespaces/{securityNamespaceId}?api-version=7.2-preview.1
+    $nsUri = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/securitynamespaces?api-version=7.2-preview.1"
     $allNamespaces = Invoke-AdoRestMethod -Uri $nsUri -Method Get -Headers $authorization 
         
     # find all Teams in Org (paginated). Needed to determine if group is a team or group
-    # GET https://dev.azure.com/{organization}/_apis/teams?api-version=6.0-preview.3        
+    # GET https://dev.azure.com/{organization}/_apis/teams?api-version=7.2-preview.3        
     $teamsList = @()
     $teamSkip = 0
     $teamBatchSize = 1000
     do {
-        $tmUrl = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/teams?`$top=$teamBatchSize&`$skip=$teamSkip&api-version=6.0-preview.3"
+        $tmUrl = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/teams?`$top=$teamBatchSize&`$skip=$teamSkip&api-version=7.2-preview.3"
         $teamBatch = Invoke-AdoRestMethod -Uri $tmUrl -Method Get -Headers $authorization
         $teamsList += $teamBatch.value
         $teamSkip += $teamBatchSize
@@ -635,19 +644,19 @@ function Get-SecuritybyGroupByNamespace()
     $allTeams = [PSCustomObject]@{ value = $teamsList }
     Write-Log -Message "Fetched $($teamsList.Count) teams" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
     
-    # get all groups in org or just for a given project
-    # vssgp,aadgp are the subject types use vssgp to get groups for a given project
-    $groupsUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?subjectTypes=vssgp&api-version=6.0-preview.1"
-    $projectUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=6.0-preview.1"
-    
-    $uri = $groupsUri
+    # get all groups (vssgp AND aadgp) in org. Do NOT filter by subjectTypes on the first
+    # page: doing so silently drops AAD groups that are directly ACL'd on a project, and
+    # those groups do appear in the Project Settings > Permissions UI.
+    $projectUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.2-preview.1"
+
+    $uri = $projectUri
     $allGroups = @()
     do {
         Write-Output "Calling API to acquire all groups in batches..."
         $headers = $null
         $response = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
         $allGroups += $response.value
-        
+
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
             $uri = $projectUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
@@ -655,8 +664,15 @@ function Get-SecuritybyGroupByNamespace()
     } while ($headers -and $headers["x-ms-continuationtoken"])
 
     # Get all projects in the organization
-    $orgUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?api-version=5.0"
+    $orgUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?api-version=7.2-preview.1"
     $orgProjects = Invoke-AdoRestMethod -uri $orgUri -Method Get -Headers $authorization 
+
+    # Build org-wide project ID -> name lookup for resolving Build Service identity
+    # names. The descriptor scope contains the project GUID; we need the human name.
+    $allProjectIdToName = @{}
+    foreach ($p in $orgProjects.value) {
+        $allProjectIdToName[$p.id] = $p.Name
+    }
 
     if( $getAllProjects -eq "True")
     {
@@ -667,6 +683,55 @@ function Get-SecuritybyGroupByNamespace()
         $groups = $allGroups 
         $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         $projectDetails = $orgProjects.value | Where-Object { $_.Name -in $projectNames }
+        if ($projectNames.Count -gt 0 -and ($null -eq $projectDetails -or @($projectDetails).Count -eq 0)) {
+            $requested = $projectNames -join ', '
+            Write-Log -Message "No Azure DevOps projects matched the requested project filter(s): $requested" -Level 'Error' -FunctionName 'Get-SecuritybyGroupByNamespace'
+            throw "No matching Azure DevOps projects were found for the requested project name(s): $requested"
+        }
+    }
+
+    # Per-project scope-descriptor group fetch. The org-wide graph/groups call does not
+    # reliably return built-in well-known project groups (Project Administrators,
+    # Contributors, Readers, Build Administrators, Endpoint Admins/Creators,
+    # Release Admins, Project Valid Users). Union those into $groups so $allGroupInfo
+    # has full descriptor coverage for ACL name resolution.
+    $existingDescriptors = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($g in $groups) { if ($g.descriptor) { [void]$existingDescriptors.Add($g.descriptor) } }
+    foreach ($projDetail in $projectDetails) {
+        $scopeUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/descriptors/" + $projDetail.id + "?api-version=7.2-preview.1"
+        try {
+            $scopeResp = Invoke-AdoRestMethod -Uri $scopeUri -Method Get -Headers $authorization
+            $scope = $scopeResp.value
+        }
+        catch {
+            Write-Log -Message "Failed to resolve scope descriptor for project $($projDetail.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $scopeUri
+            continue
+        }
+        if (-not $scope) { continue }
+
+        $scopedGroupsBaseUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?scopeDescriptor=" + [System.Uri]::EscapeDataString($scope) + "&api-version=7.2-preview.1"
+        $sgUri = $scopedGroupsBaseUri
+        $added = 0
+        do {
+            $sgHeaders = $null
+            try {
+                $sgResp = Invoke-AdoRestMethod -Uri $sgUri -Method Get -Headers $authorization -ResponseHeaders ([ref]$sgHeaders)
+            }
+            catch {
+                Write-Log -Message "Scoped group fetch failed for project $($projDetail.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $sgUri
+                break
+            }
+            foreach ($g in $sgResp.value) {
+                if ($g.descriptor -and $existingDescriptors.Add($g.descriptor)) {
+                    $groups += $g
+                    $added++
+                }
+            }
+            if ($sgHeaders -and $sgHeaders["x-ms-continuationtoken"]) {
+                $sgUri = $scopedGroupsBaseUri + "&continuationToken=" + [System.Uri]::EscapeDataString($sgHeaders["x-ms-continuationtoken"])
+            }
+        } while ($sgHeaders -and $sgHeaders["x-ms-continuationtoken"])
+        Write-Log -Message "Unioned $added scoped groups for project $($projDetail.name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
     }
 
     $allGroupInfo = @()
@@ -700,7 +765,7 @@ function Get-SecuritybyGroupByNamespace()
     }  
 
     # get all users
-    $usersUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=6.0-preview.1"
+    $usersUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.2-preview.1"
     $uri = $usersUri
     $allUsers = @()
     do {
@@ -728,6 +793,20 @@ function Get-SecuritybyGroupByNamespace()
                 $svcUserDescriptor = Get-DescriptorFromGroup -dscriptor $userFound.descriptor
                 $dscrpt = "Microsoft.TeamFoundation.ServiceIdentity;" + $svcUserDescriptor
                 $svcUserInfo = Add-svcUserInfo -object $userFound -project -$projectDetail.Name -fulldescriptor $dscrpt
+                # Build Service identities have domain="Build" and principalName=<projectGuid>.
+                # The displayName may be the friendly name, a bare GUID, or "D<guid> Build Service (org)"
+                # depending on the API version and org. Use principalName to look up the
+                # actual project name from the org-wide project list.
+                if ($userFound.domain -eq 'Build' -and $userFound.principalName) {
+                    if ($allProjectIdToName.ContainsKey($userFound.principalName)) {
+                        $svcUserInfo.SvcUserName = "$($allProjectIdToName[$userFound.principalName]) Build Service ($VSTSMasterAcct)"
+                    }
+                    elseif ($svcUserDescriptor -like '*:Build:*' -and $svcUserDescriptor -notlike '*:Build:*:*') {
+                        # Collection-scoped Build Service (no project GUID after Build)
+                        $svcUserInfo.SvcUserName = "Project Collection Build Service ($VSTSMasterAcct)"
+                    }
+                    # else: displayName already has the best name available (deleted project, etc.)
+                }
                 $allSvcUsers += $svcUserInfo
             }
         }
@@ -761,6 +840,7 @@ function Get-SecuritybyGroupByNamespace()
             Write-Log -Message "Namespace: $($namespace.Name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
             # Get the details for each token (Name, etc) to be matched and output
             $tokenDetails = Get-TokenData -userParams $userParams -projectInfo $projectDetail -Namespace $namespace -Teams $allteams.value
+            if ($null -eq $tokenDetails) { $tokenDetails = "N/A" }
             # Get the permissions for the namespace
             $nsPermissions = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct
             if ($nsPermissions) {
@@ -839,7 +919,7 @@ Function Get-PermissionsByNamespace()
 
     # find all access control lists for the given namespace and group
     try {
-        $grpUri = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/accesscontrollists/" + $ns.namespaceId + "?includeExtendedInfo=True&recurse=True&api-version=6.1-preview.1"
+        $grpUri = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/accesscontrollists/" + $ns.namespaceId + "?includeExtendedInfo=True&recurse=True&api-version=7.2-preview.1"
         $aclListByNamespace = Invoke-AdoRestMethod -Uri $grpUri -Method Get -Headers $authorization 
     }
     catch {
@@ -910,8 +990,26 @@ Function Get-PermissionsByNamespace()
                     $matchName = "$projName - General Project Build"
                     Write-Host "non-tokenData ACL match: $matchName"                    
                 } elseif ($aclToken.token -in $tokenMatches.token) {
+                    # Build tokens are "<projectId>/<defId>" (or "<projectId>/<folderId>/<defId>"
+                    # for builds in folders). Resolve the trailing segment to its build
+                    # definition name + folder path so the report shows a human-readable
+                    # name instead of the entire $tokenData array.
                     $match = $true
-                    $matchName = $tokenData.Name
+                    $defIdSegment = $aclToken.token.Split('/')[-1]
+                    $buildDef = $tokenData | Where-Object { "$($_.id)" -eq $defIdSegment } | Select-Object -First 1
+                    if ($buildDef) {
+                        $folder = $buildDef.path
+                        if ([string]::IsNullOrEmpty($folder) -or $folder -eq '\') {
+                            $matchName = "$projName - Build: $($buildDef.name)"
+                        }
+                        else {
+                            $matchName = "$projName - Build: $($folder.TrimEnd('\'))\$($buildDef.name)"
+                        }
+                    }
+                    else {
+                        # Fallback: keep raw token if the def is no longer present (deleted).
+                        $matchName = "$projName - Build (unresolved id $defIdSegment)"
+                    }
                     Write-Host "TokenData Match: $matchName"
                 }                           
             }
@@ -1383,7 +1481,7 @@ Function Get-PermissionsByNamespace()
                     # Gather name using identity lookup.
                     if (!$ident) {
                         try {
-                            $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=6.0"
+                            $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
                             $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                         }
                         catch {
@@ -1431,15 +1529,86 @@ Function Get-PermissionsByNamespace()
                         Write-Host "GroupName: $ug"                        
                     }
                 } elseif ($_.value.descriptor -like "Microsoft.TeamFoundation.ServiceIdentity*") {
-                    $currentUser = $allSvcUsers | Where-Object { $_.FullDescriptor -eq $currentDescriptor }                    
-                    $ugRawDataDumpName = $ug = $currentUser.SvcUserName
+                    $currentUser = $allSvcUsers | Where-Object { $_.FullDescriptor -eq $currentDescriptor }
+                    if ($currentUser) {
+                        $ugRawDataDumpName = $ug = $currentUser.SvcUserName
+                    }
+                    else {
+                        # Fallback: service identity not in pre-cached svc.* list.
+                        # Parse the descriptor scope: format after ';' is either
+                        # "<orgGuid>:Build:<projGuid>" (project-scoped) or
+                        # "<orgGuid>:Build:<orgGuid>" (collection-scoped) or other service types.
+                        $svcScope = $currentDescriptor.Split(';', 2)[1]
+                        if ($svcScope -like '*:Build:*') {
+                            # Extract the project GUID (last segment after last ':')
+                            $scopeParts = $svcScope.Split(':')
+                            $svcProjGuid = $scopeParts[-1]
+                            if ($allProjectIdToName.ContainsKey($svcProjGuid)) {
+                                $ug = "$($allProjectIdToName[$svcProjGuid]) Build Service ($VSTSMasterAcct)"
+                            }
+                            else {
+                                # Project GUID not in projects list: collection-scoped or deleted project
+                                $ug = "Project Collection Build Service ($VSTSMasterAcct)"
+                            }
+                        }
+                        else {
+                            # Non-Build service identity: try identity API for the name
+                            try {
+                                $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                                $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
+                                $ug = if ($id.value) { $id.value.providerDisplayName } else { $currentDescriptor }
+                            }
+                            catch {
+                                $ug = $currentDescriptor
+                                Write-Log -Message "ServiceIdentity lookup failed for $currentDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace' -Uri $identUri
+                            }
+                        }
+                        $ugRawDataDumpName = $ug
+                    }
                     $des = ""
-                    Write-Host "User: $($currentUser.SvcUserName)"
-                    $groupType = "User"                    
+                    Write-Host "User: $ug"
+                    $groupType = "User"
                 } elseif ($_.value.descriptor -like "Microsoft.IdentityModel.Claims.ClaimsIdentity*") {
-                    $currentUser = $users | Where-Object { $_.principalName -in $currentDescriptor.split('\')[-1]}
-                    $ug = "$($currentUser.DisplayName)" + " ($($currentUser.PrincipalName))"
-                    $ugRawDataDumpName = $currentUser.DisplayName
+                    # ClaimsIdentity descriptors identify individual AAD users granted permissions
+                    # directly in the UI. The descriptor is shaped like
+                    #   Microsoft.IdentityModel.Claims.ClaimsIdentity;<tenantId>\<upn>
+                    # Try several match strategies before falling back to the identity API so the
+                    # user's display name and principal name are populated in the CSV/JSON output.
+                    $descLastSegment = $currentDescriptor.Split('\')[-1]
+                    $currentUser = $users | Where-Object { $_.principalName -eq $descLastSegment } | Select-Object -First 1
+                    if (-not $currentUser) {
+                        $currentUser = $users | Where-Object { $_.mailAddress -eq $descLastSegment } | Select-Object -First 1
+                    }
+                    if (-not $currentUser) {
+                        $currentUser = $users | Where-Object { $_.descriptor -eq $currentDescriptor } | Select-Object -First 1
+                    }
+                    if (-not $currentUser) {
+                        # Fallback: resolve via identity API (handles users not in the pre-fetched
+                        # graph users list, e.g. guests, disabled, or cross-tenant accounts).
+                        try {
+                            $identUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
+                            $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
+                            if ($id.value) {
+                                $currentUser = [PSCustomObject]@{
+                                    DisplayName   = $id.value.providerDisplayName
+                                    PrincipalName = if ($id.value.properties.Mail.'$value') { $id.value.properties.Mail.'$value' } else { $descLastSegment }
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Log -Message "ClaimsIdentity lookup failed for $currentDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace' -Uri $identUri
+                        }
+                    }
+                    if ($currentUser -and $currentUser.DisplayName) {
+                        $ug = "$($currentUser.DisplayName) ($($currentUser.PrincipalName))"
+                        $ugRawDataDumpName = $currentUser.DisplayName
+                    }
+                    else {
+                        # Last-ditch: surface the descriptor's UPN segment so the row is not blank.
+                        $ug = $descLastSegment
+                        $ugRawDataDumpName = $descLastSegment
+                        Write-Log -Message "Unresolved ClaimsIdentity user: $currentDescriptor" -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+                    }
                     $des = ""
                     Write-Host "User: $ug"
                     $groupType = "User"
@@ -1451,12 +1620,19 @@ Function Get-PermissionsByNamespace()
                     $des = ""
                     $groupType = "Unknown"
                     try {
-                        $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=6.0"
+                        $identUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/identities/?descriptors=" + $currentDescriptor + "&api-version=7.2-preview.1"
                         $id = Invoke-AdoRestMethod -Uri $identUri -Method Get -Headers $authorization
                         if ($id.value) {
                             $ug = $id.value.providerDisplayName
                             $ugRawDataDumpName = $ug
-                            $groupType = if ($id.value.properties.SchemaClassName.'$value' -eq 'ServicePrincipal') { "Service Principal" } else { "Unknown" }
+                            # Managed Identities and registered SPs both report SchemaClassName=ServicePrincipal
+                            # in ADO. Without Microsoft Graph (out of scope), use the providerDisplayName
+                            # to differentiate: MSI names typically end in -msi, contain kubelet/managed-,
+                            # or start with msi-.
+                            $isMSI = $id.value.providerDisplayName -match '(?i)(-msi$|/msi$|kubelet|^msi-|managed-)'
+                            $groupType = if ($id.value.properties.SchemaClassName.'$value' -eq 'ServicePrincipal') {
+                                if ($isMSI) { 'Managed Identity' } else { 'Service Principal' }
+                            } else { 'Unknown' }
                             Write-Host "Resolved unmatched descriptor: $ug (type: $groupType)"
                         }
                     }
@@ -1760,8 +1936,8 @@ function Get-GroupMembership(){
     # Base64-encodes the Personal Access Token (PAT) appropriately
     $authorization = GetVSTSCredential -Token $PAT
                 
-    #GET https://vssps.dev.azure.com/{organization}/_apis/graph/Memberships/{subjectDescriptor}?api-version=6.0-preview.1
-    $memberUri = $userParams.HTTP_preFix +  "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/Memberships/" + $fndGroup.descriptor +"?direction=Up&api-version=6.1-preview.1"
+    #GET https://vssps.dev.azure.com/{organization}/_apis/graph/Memberships/{subjectDescriptor}?api-version=7.2-preview.1
+    $memberUri = $userParams.HTTP_preFix +  "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/Memberships/" + $fndGroup.descriptor +"?direction=Up&api-version=7.2-preview.1"
     $Memberof = Invoke-AdoRestMethod -Uri $memberUri -Method Get -Headers $authorization    
 
    
