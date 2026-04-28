@@ -386,56 +386,28 @@ function Get-GroupMembershipReport(){
     function Resolve-ServiceIdentityName {
         param($subjectDescriptor, $rawDisplayName)
 
-        if ([string]::IsNullOrWhiteSpace($subjectDescriptor)) {
-            # No descriptor available: try resolving a GUID embedded in the
-            # displayName directly against the org-wide project lookup.
-            if ($rawDisplayName -match '^D?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(.*)$') {
-                $embeddedGuid = $Matches[1]
-                if ($projectIdToName.ContainsKey($embeddedGuid)) {
-                    return "$($projectIdToName[$embeddedGuid])$($Matches[2])"
+        # Strategy 1: look up the graph user by descriptor to get principalName
+        # (which is the project GUID for Build Service identities).
+        if (-not [string]::IsNullOrWhiteSpace($subjectDescriptor)) {
+            $matchedSvcUser = $allUsers | Where-Object { $_.descriptor -eq $subjectDescriptor } | Select-Object -First 1
+            if ($matchedSvcUser -and $matchedSvcUser.domain -eq 'Build' -and $matchedSvcUser.principalName) {
+                if ($projectIdToName.ContainsKey($matchedSvcUser.principalName)) {
+                    return "$($projectIdToName[$matchedSvcUser.principalName]) Build Service ($VSTSMasterAcct)"
                 }
             }
-            return $rawDisplayName
         }
 
-        # Translate the svc.* graph descriptor to its SID descriptor via the
-        # identity API, then check the scope for Build:*.
-        try {
-            $idUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct +
-                     "/_apis/identities?subjectDescriptors=" + $subjectDescriptor +
-                     "&queryMembership=None&api-version=7.2-preview.1"
-            $resp = Invoke-AdoRestMethod -Uri $idUri -Method Get -Headers $authorization
-        }
-        catch {
-            Write-Log -Message "Service identity resolve failed for $subjectDescriptor : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Resolve-ServiceIdentityName' -Uri $idUri
-            return $rawDisplayName
-        }
-
-        $sidDescriptor = $resp.value | Select-Object -First 1 -ExpandProperty descriptor -ErrorAction SilentlyContinue
-        if (-not $sidDescriptor -or $sidDescriptor -notlike 'Microsoft.TeamFoundation.ServiceIdentity*') {
-            return $rawDisplayName
-        }
-
-        $svcScope = $sidDescriptor.Split(';', 2)[1]
-        if ($svcScope -like 'Build:*') {
-            $scopeParts = $svcScope.Split(':')
-            if ($scopeParts.Count -ge 3) {
-                $projGuidFromScope = $scopeParts[2]
-                if ($projectIdToName.ContainsKey($projGuidFromScope)) {
-                    return "$($projectIdToName[$projGuidFromScope]) Build Service ($VSTSMasterAcct)"
-                }
-                # Scope has a project GUID but project not found (deleted?).
-                # Try to resolve GUID in the displayName as fallback.
-                if ($rawDisplayName -match '^D?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(.*)$') {
-                    $embeddedGuid = $Matches[1]
-                    if ($projectIdToName.ContainsKey($embeddedGuid)) {
-                        return "$($projectIdToName[$embeddedGuid])$($Matches[2])"
-                    }
-                }
-                return "Project Build Service ($VSTSMasterAcct)"
+        # Strategy 2: try resolving a GUID embedded in the displayName against
+        # the org-wide project lookup. Handles bare GUIDs and "D<guid> Build Service (org)".
+        if ($rawDisplayName -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+            $embeddedGuid = $Matches[1]
+            if ($projectIdToName.ContainsKey($embeddedGuid)) {
+                # Reconstruct: replace the GUID portion with the project name
+                $resolved = $rawDisplayName -replace "D?$([regex]::Escape($embeddedGuid))", $projectIdToName[$embeddedGuid]
+                return $resolved
             }
-            return "Project Collection Build Service ($VSTSMasterAcct)"
         }
+
         return $rawDisplayName
     }
 
