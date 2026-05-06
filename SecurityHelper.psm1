@@ -686,14 +686,16 @@ function Get-SecuritybyGroupByNamespace()
 
     if( $getAllProjects -eq "True")
     {
-        # Use a separate List so dedup .Add() below does not mutate $allGroups
+        # Use a separate List so dedup .Add() below does not mutate $allGroups.
+        # AddRange accepts any IEnumerable; do not cast to [object[]] -- that
+        # forces a full copy and undoes the perf benefit on large orgs.
         $groups = [System.Collections.Generic.List[object]]::new()
-        $groups.AddRange([object[]]$allGroups)
+        if ($null -ne $allGroups) { $groups.AddRange($allGroups) }
         $projectDetails = $orgProjects.Value
     }else {
         # find all groups for given project (supports comma-separated list)
         $groups = [System.Collections.Generic.List[object]]::new()
-        $groups.AddRange([object[]]$allGroups)
+        if ($null -ne $allGroups) { $groups.AddRange($allGroups) }
         $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         $projectDetails = $orgProjects.value | Where-Object { $_.Name -in $projectNames }
         if ($projectNames.Count -gt 0 -and ($null -eq $projectDetails -or @($projectDetails).Count -eq 0)) {

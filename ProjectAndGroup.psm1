@@ -475,7 +475,11 @@ function Get-GroupMembershipReport(){
             # Try in-memory user match first (fast path) via descriptor index
             $matchedUser = $allUsersByDescriptor[$item.memberDescriptor]
             if ($matchedUser) {
-                $entInfo = $entitlementLookup[$matchedUser.principalName.ToLower()]
+                # principalName can be $null on service identities; guard before .ToLower()
+                $entInfo = $null
+                if ($matchedUser.principalName) {
+                    $entInfo = $entitlementLookup[$matchedUser.principalName.ToLower()]
+                }
                 # Service identities (svc.*) such as the Project Build Service have
                 # graph/users displayName set to the bare project GUID. Resolve to the
                 # friendly "<Project> Build Service (<Org>)" form before emit. Mirrors
