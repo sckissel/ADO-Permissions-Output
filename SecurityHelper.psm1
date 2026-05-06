@@ -167,8 +167,8 @@ function Add-GroupInfo {
     param (
         $object, $name, $project, $descriptor, $fulldescriptor, $groupType
     )
-    #check for CRLF in description
-    $des = $object.description.replace("`n",", ").replace("`r",", ")
+    # Some group types (e.g. aadgp) can have a null description; guard against it.
+    $des = if ($object.description) { $object.description.replace("`n",", ").replace("`r",", ") } else { "" }
 
     $groupInfo = @{
         GroupName = $name
@@ -632,13 +632,13 @@ function Get-SecuritybyGroupByNamespace()
         
     # find all Teams in Org (paginated). Needed to determine if group is a team or group
     # GET https://dev.azure.com/{organization}/_apis/teams?api-version=7.2-preview.3        
-    $teamsList = @()
+    $teamsList = [System.Collections.Generic.List[object]]::new()
     $teamSkip = 0
     $teamBatchSize = 1000
     do {
         $tmUrl = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/teams?`$top=$teamBatchSize&`$skip=$teamSkip&api-version=7.2-preview.3"
         $teamBatch = Invoke-AdoRestMethod -Uri $tmUrl -Method Get -Headers $authorization
-        $teamsList += $teamBatch.value
+        if ($teamBatch.value) { $teamsList.AddRange([object[]]$teamBatch.value) }
         $teamSkip += $teamBatchSize
     } while ($teamBatch.value.Count -eq $teamBatchSize)
     $allTeams = [PSCustomObject]@{ value = $teamsList }
@@ -650,12 +650,12 @@ function Get-SecuritybyGroupByNamespace()
     $projectUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.2-preview.1"
 
     $uri = $projectUri
-    $allGroups = @()
+    $allGroups = [System.Collections.Generic.List[object]]::new()
     do {
         Write-Output "Calling API to acquire all groups in batches..."
         $headers = $null
         $response = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
-        $allGroups += $response.value
+        if ($response.value) { $allGroups.AddRange([object[]]$response.value) }
 
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
@@ -663,9 +663,19 @@ function Get-SecuritybyGroupByNamespace()
         }
     } while ($headers -and $headers["x-ms-continuationtoken"])
 
-    # Get all projects in the organization
-    $orgUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?api-version=7.2-preview.1"
-    $orgProjects = Invoke-AdoRestMethod -uri $orgUri -Method Get -Headers $authorization 
+    # Get all projects in the organization (paginated; orgs with >100 projects need continuationToken)
+    $projectsBaseUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?`$top=1000&api-version=7.2-preview.1"
+    $uri = $projectsBaseUri
+    $orgProjectsList = [System.Collections.Generic.List[object]]::new()
+    do {
+        $headers = $null
+        $orgProjResp = Invoke-AdoRestMethod -uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
+        if ($orgProjResp.value) { $orgProjectsList.AddRange([object[]]$orgProjResp.value) }
+        if ($headers -and $headers["x-ms-continuationtoken"]) {
+            $uri = $projectsBaseUri + "&continuationToken=" + [System.Uri]::EscapeDataString($headers["x-ms-continuationtoken"])
+        }
+    } while ($headers -and $headers["x-ms-continuationtoken"])
+    $orgProjects = [PSCustomObject]@{ value = $orgProjectsList.ToArray() }
 
     # Build org-wide project ID -> name lookup for resolving Build Service identity
     # names. The descriptor scope contains the project GUID; we need the human name.
@@ -676,11 +686,14 @@ function Get-SecuritybyGroupByNamespace()
 
     if( $getAllProjects -eq "True")
     {
-        $groups = $allGroups
+        # Use a separate List so dedup .Add() below does not mutate $allGroups
+        $groups = [System.Collections.Generic.List[object]]::new()
+        $groups.AddRange([object[]]$allGroups)
         $projectDetails = $orgProjects.Value
     }else {
         # find all groups for given project (supports comma-separated list)
-        $groups = $allGroups 
+        $groups = [System.Collections.Generic.List[object]]::new()
+        $groups.AddRange([object[]]$allGroups)
         $projectNames = $projectName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         $projectDetails = $orgProjects.value | Where-Object { $_.Name -in $projectNames }
         if ($projectNames.Count -gt 0 -and ($null -eq $projectDetails -or @($projectDetails).Count -eq 0)) {
@@ -723,7 +736,7 @@ function Get-SecuritybyGroupByNamespace()
             }
             foreach ($g in $sgResp.value) {
                 if ($g.descriptor -and $existingDescriptors.Add($g.descriptor)) {
-                    $groups += $g
+                    $groups.Add($g)
                     $added++
                 }
             }
@@ -734,7 +747,7 @@ function Get-SecuritybyGroupByNamespace()
         Write-Log -Message "Unioned $added scoped groups for project $($projDetail.name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
     }
 
-    $allGroupInfo = @()
+    $allGroupInfo = [System.Collections.Generic.List[object]]::new()
     # loop thru each group
     foreach ($fnd in $groups) {
 
@@ -748,7 +761,7 @@ function Get-SecuritybyGroupByNamespace()
             $teamDescriptor = Get-DescriptorFromGroup -dscriptor $fnd.descriptor
             $dscrpt = "Microsoft.TeamFoundation.Identity;" + $teamDescriptor
             $groupInfo = Add-GroupInfo -object $fnd -name $tm -project $pName -descriptor $teamDescriptor -fulldescriptor $dscrpt -groupType $grpType
-            $allGroupInfo += $groupInfo
+            $allGroupInfo.Add($groupInfo)
         } else { 
             # Coalesce all Group info into another Object with the descriptor
             $grpType = "Group"
@@ -760,19 +773,19 @@ function Get-SecuritybyGroupByNamespace()
             else {
                 $groupInfo = Add-GroupInfo -object $fnd -name $tm -project $pName -descriptor $groupDescriptor -fulldescriptor $dscrpt -groupType $grpType
             }            
-            $allGroupInfo += $groupInfo
+            $allGroupInfo.Add($groupInfo)
         }
     }  
 
     # get all users
     $usersUri = $userParams.HTTP_preFix  + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.2-preview.1"
     $uri = $usersUri
-    $allUsers = @()
+    $allUsers = [System.Collections.Generic.List[object]]::new()
     do {
         Write-Output "Calling API to acquire all users in batches..."
         $headers = $null
         $response = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
-        $allUsers += $response.value
+        if ($response.value) { $allUsers.AddRange([object[]]$response.value) }
         
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
@@ -792,7 +805,7 @@ function Get-SecuritybyGroupByNamespace()
             if ($userFound.descriptor -like "svc.*") {
                 $svcUserDescriptor = Get-DescriptorFromGroup -dscriptor $userFound.descriptor
                 $dscrpt = "Microsoft.TeamFoundation.ServiceIdentity;" + $svcUserDescriptor
-                $svcUserInfo = Add-svcUserInfo -object $userFound -project -$projectDetail.Name -fulldescriptor $dscrpt
+                $svcUserInfo = Add-svcUserInfo -object $userFound -project $projectDetail.Name -fulldescriptor $dscrpt
                 # Build Service identities have domain="Build" and principalName=<projectGuid>.
                 # The displayName may be the friendly name, a bare GUID, or "D<guid> Build Service (org)"
                 # depending on the API version and org. Use principalName to look up the
@@ -840,7 +853,9 @@ function Get-SecuritybyGroupByNamespace()
             Write-Log -Message "Namespace: $($namespace.Name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
             # Get the details for each token (Name, etc) to be matched and output
             $tokenDetails = Get-TokenData -userParams $userParams -projectInfo $projectDetail -Namespace $namespace -Teams $allteams.value
-            if ($null -eq $tokenDetails) { $tokenDetails = "N/A" }
+            # Treat both $null and an empty collection as "N/A" so the downstream mandatory
+            # parameter binding does not fail when PowerShell unrolls @() to nothing.
+            if ($null -eq $tokenDetails -or ($tokenDetails -is [System.Collections.ICollection] -and $tokenDetails.Count -eq 0)) { $tokenDetails = "N/A" }
             # Get the permissions for the namespace
             $nsPermissions = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct
             if ($nsPermissions) {
@@ -860,6 +875,18 @@ function Get-SecuritybyGroupByNamespace()
                 Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $csvFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
             }
         }
+
+        # Per-project working set ($allPermissions, $allSvcUsers, $toDoNamespaces, etc.)
+        # is already flushed to disk above and no longer referenced. Hint the .NET GC
+        # to reclaim it now so memory does not creep up across a long all-projects run
+        # on a memory-capped container. Org-level caches ($allNamespaces, $allUsers,
+        # $allGroupInfo, etc.) remain referenced and are NOT reclaimed.
+        # Cross-platform (Windows/Linux, PS 5.1/7.x).
+        $allPermissions = $null
+        $allSvcUsers    = $null
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        [System.GC]::Collect()
     }
 }
        
@@ -1414,7 +1441,8 @@ Function Get-PermissionsByNamespace()
                             for ($r = 1; $r -lt $aclTokenSplit.Count; $r++) {
                                 $matched += '\' + $aclTokenSplit[$r]
                             }
-                            $matchName = $matched
+                            # Join so $matchName is a string; otherwise Export-Csv serializes the array as "System.Object[]".
+                            $matchName = $matched -join ''
                         }                    
                         if ($matchName) {
                             $match = $true

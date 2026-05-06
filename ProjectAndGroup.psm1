@@ -65,15 +65,17 @@ function Get-GroupMembershipReport(){
 
     Write-Log -Message "Starting membership report" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
-    # Pre-fetch all users in org with continuation token support for in-memory matching
+    # Pre-fetch all users in org with continuation token support for in-memory matching.
+    # Use List[object] + AddRange so each page does not rebuild the entire backing array
+    # (PowerShell '+=' on @() is O(N) per add and creates GC pressure).
     $usersUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/users?api-version=7.2-preview.1"
     $uri = $usersUri
-    $allUsers = @()
+    $allUsers = [System.Collections.Generic.List[object]]::new()
     do {
         Write-Log -Message "Fetching users batch..." -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
         $headers = $null
         $response = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
-        $allUsers += $response.value
+        if ($response.value) { $allUsers.AddRange([object[]]$response.value) }
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
             $uri = $usersUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
@@ -81,15 +83,33 @@ function Get-GroupMembershipReport(){
     } while ($headers -and $headers["x-ms-continuationtoken"])
     Write-Log -Message "Fetched $($allUsers.Count) users" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
-    # Pre-fetch all groups in org with continuation token support
+    # Build hashtable indexes over $allUsers so per-member descriptor / mail /
+    # principalName / displayName lookups in Resolve-* helpers are O(1) instead
+    # of an O(N) Where-Object pipeline scan. This avoids quadratic blow-up and
+    # the OutOfMemoryException seen on large orgs running on memory-capped
+    # Linux containers. Same data, just indexed.
+    $allUsersByDescriptor    = @{}
+    $allUsersByMail          = @{}
+    $allUsersByPrincipalName = @{}
+    $allUsersByDisplayName   = @{}
+    foreach ($u in $allUsers) {
+        if ($u.descriptor)               { $allUsersByDescriptor[$u.descriptor] = $u }
+        if ($u.mailAddress)              { $allUsersByMail[$u.mailAddress.ToLower()] = $u }
+        if ($u.principalName)            { $allUsersByPrincipalName[$u.principalName.ToLower()] = $u }
+        if ($u.displayName -and -not $allUsersByDisplayName.ContainsKey($u.displayName)) {
+            $allUsersByDisplayName[$u.displayName] = $u
+        }
+    }
+
+    # Pre-fetch all groups in org with continuation token support (List + AddRange to avoid array rebuilds)
     $groupsUri = $userParams.HTTP_preFix + "://vssps.dev.azure.com/" + $VSTSMasterAcct + "/_apis/graph/groups?api-version=7.2-preview.1"
     $uri = $groupsUri
-    $allGroups = @()
+    $allGroups = [System.Collections.Generic.List[object]]::new()
     do {
         Write-Log -Message "Fetching groups batch..." -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
         $headers = $null
         $response = Invoke-AdoRestMethod -Uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
-        $allGroups += $response.value
+        if ($response.value) { $allGroups.AddRange([object[]]$response.value) }
         if ($headers -and $headers["x-ms-continuationtoken"]) {
             $continuation = $headers["x-ms-continuationtoken"]
             $uri = $groupsUri + "&continuationToken=" + [System.Uri]::EscapeDataString($continuation)
@@ -97,22 +117,49 @@ function Get-GroupMembershipReport(){
     } while ($headers -and $headers["x-ms-continuationtoken"])
     Write-Log -Message "Fetched $($allGroups.Count) groups" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
-    # Get all teams in org to distinguish teams from groups (paginated)
-    $teamsList = @()
+    # Index groups by descriptor up-front. Used both to dedup scoped-group fetches
+    # below (replacing an O(N^2) Where-Object scan inside a loop) and later for
+    # ACL-derived principal union. Updated as scoped groups are added.
+    $groupsByDescriptor = @{}
+    foreach ($g in $allGroups) {
+        if ($g.descriptor) { $groupsByDescriptor[$g.descriptor] = $g }
+    }
+
+    # Get all teams in org to distinguish teams from groups (paginated; List + AddRange)
+    $teamsList = [System.Collections.Generic.List[object]]::new()
     $teamSkip = 0
     $teamBatchSize = 1000
     do {
         $teamBatchUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/teams?`$top=$teamBatchSize&`$skip=$teamSkip&api-version=7.2-preview.3"
         $teamBatch = Invoke-AdoRestMethod -Uri $teamBatchUri -Method Get -Headers $authorization
-        $teamsList += $teamBatch.value
+        if ($teamBatch.value) { $teamsList.AddRange([object[]]$teamBatch.value) }
         $teamSkip += $teamBatchSize
     } while ($teamBatch.value.Count -eq $teamBatchSize)
     $allTeams = [PSCustomObject]@{ value = $teamsList }
     Write-Log -Message "Fetched $($teamsList.Count) teams" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
 
-    # Get project details to identify project-scoped groups
-    $orgUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?api-version=7.2-preview.1"
-    $orgProjects = Invoke-AdoRestMethod -uri $orgUri -Method Get -Headers $authorization
+    # Index teams by "<projectName>|<teamName>" for O(1) lookups in member
+    # resolution paths (replaces several Where-Object pipeline scans).
+    $teamsByProjectAndName = @{}
+    foreach ($t in $teamsList) {
+        if ($t.projectName -and $t.name) {
+            $teamsByProjectAndName["$($t.projectName)|$($t.name)"] = $t
+        }
+    }
+
+    # Get project details to identify project-scoped groups (paginated for orgs with >100 projects)
+    $projectsBaseUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/projects?`$top=1000&api-version=7.2-preview.1"
+    $uri = $projectsBaseUri
+    $orgProjectsList = [System.Collections.Generic.List[object]]::new()
+    do {
+        $headers = $null
+        $orgProjResp = Invoke-AdoRestMethod -uri $uri -Method Get -Headers $authorization -ResponseHeaders ([ref]$headers)
+        if ($orgProjResp.value) { $orgProjectsList.AddRange([object[]]$orgProjResp.value) }
+        if ($headers -and $headers["x-ms-continuationtoken"]) {
+            $uri = $projectsBaseUri + "&continuationToken=" + [System.Uri]::EscapeDataString($headers["x-ms-continuationtoken"])
+        }
+    } while ($headers -and $headers["x-ms-continuationtoken"])
+    $orgProjects = [PSCustomObject]@{ value = $orgProjectsList.ToArray() }
 
     # Pre-fetch user entitlements for status and last-access date
     $entitlementUri = $userParams.HTTP_preFix + "://vsaex.dev.azure.com/" + $VSTSMasterAcct + "/_apis/userentitlements?api-version=7.2-preview.3&`$top=10000"
@@ -197,19 +244,15 @@ function Get-GroupMembershipReport(){
         } while ($headers -and $headers["x-ms-continuationtoken"])
 
         $projectScopedGroups[$projId] = $scopedList
-        # Union into $allGroups so descriptor lookups in resolve paths can find them
+        # Union into $allGroups so descriptor lookups in resolve paths can find them.
+        # O(1) dedup via $groupsByDescriptor; .Add() on the List avoids array rebuilds.
         foreach ($g in $scopedList) {
-            if (-not ($allGroups | Where-Object { $_.descriptor -eq $g.descriptor } | Select-Object -First 1)) {
-                $allGroups += $g
+            if ($g.descriptor -and -not $groupsByDescriptor.ContainsKey($g.descriptor)) {
+                $allGroups.Add($g)
+                $groupsByDescriptor[$g.descriptor] = $g
             }
         }
         Write-Log -Message "Fetched $($scopedList.Count) scoped groups for project $($projectIdToName[$projId])" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
-    }
-
-    # Index all groups by descriptor for fast union with ACL-derived principals
-    $groupsByDescriptor = @{}
-    foreach ($g in $allGroups) {
-        if ($g.descriptor) { $groupsByDescriptor[$g.descriptor] = $g }
     }
 
     # Fetch security namespaces once for the ACL harvest (matches what the UI shows)
@@ -389,7 +432,7 @@ function Get-GroupMembershipReport(){
         # Strategy 1: look up the graph user by descriptor to get principalName
         # (which is the project GUID for Build Service identities).
         if (-not [string]::IsNullOrWhiteSpace($subjectDescriptor)) {
-            $matchedSvcUser = $allUsers | Where-Object { $_.descriptor -eq $subjectDescriptor } | Select-Object -First 1
+            $matchedSvcUser = $allUsersByDescriptor[$subjectDescriptor]
             if ($matchedSvcUser -and $matchedSvcUser.domain -eq 'Build' -and $matchedSvcUser.principalName) {
                 if ($projectIdToName.ContainsKey($matchedSvcUser.principalName)) {
                     return "$($projectIdToName[$matchedSvcUser.principalName]) Build Service ($VSTSMasterAcct)"
@@ -402,7 +445,11 @@ function Get-GroupMembershipReport(){
         if ($rawDisplayName -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
             $embeddedGuid = $Matches[1]
             if ($projectIdToName.ContainsKey($embeddedGuid)) {
-                # Reconstruct: replace the GUID portion with the project name
+                # Bare-GUID case: synthesize the full friendly name (no suffix to preserve).
+                if ($rawDisplayName -match '^[0-9a-fA-F\-]{36}$') {
+                    return "$($projectIdToName[$embeddedGuid]) Build Service ($VSTSMasterAcct)"
+                }
+                # Otherwise: substitute the GUID portion in place (e.g. "D<guid> Build Service (org)").
                 $resolved = $rawDisplayName -replace "D?$([regex]::Escape($embeddedGuid))", $projectIdToName[$embeddedGuid]
                 return $resolved
             }
@@ -425,8 +472,8 @@ function Get-GroupMembershipReport(){
         }
 
         foreach ($item in $members.value) {
-            # Try in-memory user match first (fast path)
-            $matchedUser = $allUsers | Where-Object { $_.descriptor -eq $item.memberDescriptor }
+            # Try in-memory user match first (fast path) via descriptor index
+            $matchedUser = $allUsersByDescriptor[$item.memberDescriptor]
             if ($matchedUser) {
                 $entInfo = $entitlementLookup[$matchedUser.principalName.ToLower()]
                 # Service identities (svc.*) such as the Project Build Service have
@@ -489,8 +536,7 @@ function Get-GroupMembershipReport(){
                     if ($prNameParts.Count -ge 2) {
                         $pn = $prNameParts[0].Substring(1, $prNameParts[0].Length - 2)
                         $tn = $prNameParts[1]
-                        $teamFound = $allTeams.value | Where-Object { ($_.ProjectName -eq $pn) -and ($_.name -eq $tn) }
-                        if ($teamFound) { $memberEntityType = "Team" }
+                        if ($teamsByProjectAndName.ContainsKey("$pn|$tn")) { $memberEntityType = "Team" }
                     }
                 }
 
@@ -587,13 +633,13 @@ function Get-GroupMembershipReport(){
             if ($memberType -eq "User") {
                 # Cross-reference against pre-fetched Graph users (match by email, principalName, or displayName)
                 if ($email) {
-                    $graphUser = $allUsers | Where-Object { $_.mailAddress -eq $email } | Select-Object -First 1
+                    $graphUser = $allUsersByMail[$email.ToLower()]
                 }
                 if (-not $graphUser -and $identity.principalName) {
-                    $graphUser = $allUsers | Where-Object { $_.principalName -eq $identity.principalName } | Select-Object -First 1
+                    $graphUser = $allUsersByPrincipalName[$identity.principalName.ToLower()]
                 }
                 if (-not $graphUser -and $identity.displayName) {
-                    $graphUser = $allUsers | Where-Object { $_.displayName -eq $identity.displayName } | Select-Object -First 1
+                    $graphUser = $allUsersByDisplayName[$identity.displayName]
                 }
                 # Entitlement lookup: try HierarchyQuery email, then graph user's principalName
                 if ($email) { $entInfo = $entitlementLookup[$email.ToLower()] }
@@ -654,8 +700,8 @@ function Get-GroupMembershipReport(){
         }
 
         foreach ($item in $parents.value) {
-            # Try in-memory group match first
-            $matchedGroup = $allGroups | Where-Object { $_.descriptor -eq $item.containerDescriptor }
+            # Try in-memory group match first via descriptor index
+            $matchedGroup = $groupsByDescriptor[$item.containerDescriptor]
             if ($matchedGroup) {
                 # Determine if parent is a team
                 $parentType = "Group"
@@ -664,8 +710,7 @@ function Get-GroupMembershipReport(){
                     if ($parts.Count -ge 2) {
                         $pn = $parts[0].Substring(1, $parts[0].Length - 2)
                         $tn = $parts[1]
-                        $teamFound = $allTeams.value | Where-Object { ($_.ProjectName -eq $pn) -and ($_.name -eq $tn) }
-                        if ($teamFound) { $parentType = "Team" }
+                        if ($teamsByProjectAndName.ContainsKey("$pn|$tn")) { $parentType = "Team" }
                     }
                 }
 
@@ -704,8 +749,7 @@ function Get-GroupMembershipReport(){
                     if ($parts.Count -ge 2) {
                         $pn = $parts[0].Substring(1, $parts[0].Length - 2)
                         $tn = $parts[1]
-                        $teamFound = $allTeams.value | Where-Object { ($_.ProjectName -eq $pn) -and ($_.name -eq $tn) }
-                        if ($teamFound) { $parentType = "Team" }
+                        if ($teamsByProjectAndName.ContainsKey("$pn|$tn")) { $parentType = "Team" }
                     }
                 }
 
@@ -742,7 +786,7 @@ function Get-GroupMembershipReport(){
             $prNameParts = $group.principalName.Split('\')
             $shortName = if ($prNameParts.Count -ge 2) { $prNameParts[1] } else { $group.principalName }
 
-            $isTeam = $allTeams.value | Where-Object { ($_.ProjectName -eq $projDisplayName) -and ($_.name -eq $shortName) }
+            $isTeam = $teamsByProjectAndName.ContainsKey("$projDisplayName|$shortName")
             $grpType = if ($isTeam) { "Team" } else { "Group" }
             $grpDesc = if ($group.description) { $group.description } else { $null }
 
@@ -789,6 +833,19 @@ function Get-GroupMembershipReport(){
             $outputResult | Export-Csv -Path $csvFile -NoTypeInformation -Force
             Write-Log -Message "Wrote CSV to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
         }
+
+        # Per-project intermediates ($outputResult, $aadGroupsResolved, $vssGroupsResolved)
+        # are no longer referenced once written to disk. Hint the .NET GC to reclaim them
+        # before starting the next project so memory does not creep up across a long
+        # all-projects run on a memory-capped container. The org-level caches
+        # ($allUsers, $allGroups, indexes, etc.) are still referenced by enclosing-scope
+        # variables and are NOT reclaimed. Cross-platform (Windows/Linux, PS 5.1/7.x).
+        $outputResult     = $null
+        $aadGroupsResolved = $null
+        $vssGroupsResolved = $null
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        [System.GC]::Collect()
     }
 }
 
