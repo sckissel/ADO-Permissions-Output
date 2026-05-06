@@ -80,6 +80,17 @@ jobs:
         artifact: 'ADOPermissionsOutput'
         publishLocation: 'pipeline'
 
+  # Failure-only fallback: always compiled, preserves partial output on crash.
+  # Per-run artifact name so it never overwrites prior good runs.
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish partial output (failure fallback)'
+    condition: failed()
+    continueOnError: true
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/Security'
+      artifact: 'ADOPermissionsOutput-partial'
+      publishLocation: 'pipeline'
+
   - ${{ if eq(parameters.CommitOutput, true) }}:
     - powershell: |
           write-host "###########################################"
