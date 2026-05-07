@@ -7,6 +7,26 @@ description: Version history and notable changes for ADO Permissions Output
 
 ### Fixed
 
+* **ACL prefetch failures were logged at Warning and silently produced empty
+  reports.** When the per-namespace `accesscontrollists` REST call threw
+  (transient throttling, auth expiry, etc.), the catch block in
+  `Get-SecuritybyGroupByNamespace` cached `value=@()` and continued at
+  Warning severity, so the pipeline finished green with permissions for that
+  namespace missing across every project. Now logged at Error so the failure
+  is unmistakable in pipeline output. Empty-cache behavior preserved so a
+  single namespace failure does not abort the whole run. Caught by Copilot
+  review on PR #5.
+
+* **Identity-resolution failure branch was silently swallowed.** The
+  `Get-PermissionsByNamespace` `Write-Host` shadow installed for
+  `VerbosePermissionLogging=$false` (the default) also suppressed the
+  error-path `Write-Host "Error : ..."` call in the identity-lookup else
+  branch. The original line also used `+` concatenation that `Write-Host`
+  does not honor, so the message was mangled even when verbose. Replaced
+  with `Write-Log -Level 'Error'`, which bypasses the shadow via the
+  fully-qualified `Microsoft.PowerShell.Utility\Write-Host` call inside
+  `Write-Log`. Caught by Copilot review on PR #5.
+
 * **Deny permission rows referenced wrong action bit.** The Deny decode loop in
   `Get-PermissionsByNamespace` (`SecurityHelper.psm1`) computed `$raise` from
   `$inhAllowplace` instead of `$Denyplace`, so Deny rows reported the action

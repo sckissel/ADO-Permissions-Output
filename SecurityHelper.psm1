@@ -911,7 +911,10 @@ function Get-SecuritybyGroupByNamespace()
                     $aclCacheByNamespace[$namespace.namespaceId] = Invoke-AdoRestMethod -Uri $aclUri -Method Get -Headers $authorization
                 }
                 catch {
-                    Write-Log -Message "ACL prefetch failed for namespace $($namespace.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $aclUri
+                    # Cache an empty result so we don't re-hammer a failing namespace for every
+                    # remaining project, but log at Error so the failure is unmistakable in the
+                    # pipeline output. Downstream output for this namespace will be incomplete.
+                    Write-Log -Message "ACL prefetch failed for namespace $($namespace.name): $($_.Exception.Message). Permissions for this namespace will be missing from the report." -Level 'Error' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $aclUri
                     $aclCacheByNamespace[$namespace.namespaceId] = [PSCustomObject]@{ value = @() }
                 }
             }
@@ -1621,7 +1624,9 @@ Function Get-PermissionsByNamespace()
                         } else {
                             $ErrorMessage = $_.Exception.Message
                             $FailedItem = $_.Exception.ItemName
-                            Write-Host "Error : " + $ErrorMessage + " iTEM : " + $FailedItem
+                            # Use Write-Log so the failure bypasses the local Write-Host shadow
+                            # installed for VerbosePermissionLogging=$false (the default).
+                            Write-Log -Message "Identity resolution returned no value. Error: $ErrorMessage Item: $FailedItem" -Level 'Error' -FunctionName 'Get-PermissionsByNamespace'
                             break "ERROR OCCURRED!"
                         }
                     }
