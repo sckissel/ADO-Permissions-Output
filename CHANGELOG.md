@@ -49,7 +49,24 @@ description: Version history and notable changes for ADO Permissions Output
   boolean (default `false`) wired through `SecurityMain.ps1` to
   `Get-SecuritybyGroupByNamespace -VerboseLogging`. Documented in `README.md`.
 
-## v1.1.0 (2026-04-27)
+## v1.1.1 (2026-04-29)
+
+### Changed
+
+* **List<T> conversion for user and group fetching.** `ProjectAndGroup.psm1`
+  and `SecurityHelper.psm1` now accumulate users and groups into
+  `System.Collections.Generic.List[object]` instead of array `+=` patterns,
+  which were O(n^2) and held duplicate intermediate arrays in memory. Reduces
+  peak working set on large orgs.
+* **`main.yml` pipeline updates** to support the refactored modules.
+
+### Fixed
+
+* **Null `principalName` guard in `ProjectAndGroup.psm1`.** Service identities
+  can return a null `principalName`; calling `.ToLower()` on it threw. Now
+  null-checked before normalization.
+* **`SecurityHelper.psm1` `AddRange` null guard** and removed an unnecessary
+  `[object[]]` cast that copied the source list.
 
 ### Fixed
 
