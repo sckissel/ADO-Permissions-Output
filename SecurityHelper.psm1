@@ -1790,8 +1790,8 @@ Function Get-PermissionsByNamespace()
                         if( $permAllow.Substring($a,1) -ge 1)
                         {
                             
-                            # find bit in action list
-                            $raise = [Math]::Pow(2, $Allowplace)
+                            # find bit in action list (cast to int: hashtable keys from JSON are [Int64], Pow returns [Double])
+                            $raise = [int][Math]::Pow(2, $Allowplace)
                             $bit = $nsActionsByBit[$raise]
 
                             if ($bit) {
@@ -1833,7 +1833,7 @@ Function Get-PermissionsByNamespace()
 
                                 if( $effAllow.Substring($a,1) -ge 1)
                                 {
-                                    $raise = [Math]::Pow(2, $effAllowplace)
+                                    $raise = [int][Math]::Pow(2, $effAllowplace)
                                     $bit = $nsActionsByBit[$raise]
                                     
                                     if ($bit) {
@@ -1878,7 +1878,7 @@ Function Get-PermissionsByNamespace()
 
                             if( $inhAllow.Substring($a,1) -ge 1)
                             {
-                                $raise = [Math]::Pow(2, $inhAllowplace)
+                                $raise = [int][Math]::Pow(2, $inhAllowplace)
                                 $bit = $nsActionsByBit[$raise]
 
                                 if ($bit) {
@@ -1918,7 +1918,7 @@ Function Get-PermissionsByNamespace()
 
                         if( $permDeny.Substring($a,1) -ge 1)
                         {
-                            $raise = [Math]::Pow(2, $inhAllowplace)
+                            $raise = [int][Math]::Pow(2, $Denyplace)
                             $bit = $nsActionsByBit[$raise]
 
                             if ($bit) {
@@ -1962,7 +1962,7 @@ Function Get-PermissionsByNamespace()
                             if( $effDeny.Substring($a,1) -ge 1)
                             {
                                 
-                                $raise = [Math]::Pow(2, $EffDenyplace)
+                                $raise = [int][Math]::Pow(2, $EffDenyplace)
                                 $bit = $nsActionsByBit[$raise]
 
                                 if ($bit) {
@@ -2007,7 +2007,7 @@ Function Get-PermissionsByNamespace()
                             if( $inhDeny.Substring($a,1) -ge 1)
                             {
                                 
-                                $raise = [Math]::Pow(2, $EffDenyplace)
+                                $raise = [int][Math]::Pow(2, $EffDenyplace)
                                 $bit = $nsActionsByBit[$raise]
 
                                 if ($bit) {
