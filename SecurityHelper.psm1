@@ -8,6 +8,13 @@
 # Module-scoped log file path, set via Initialize-Log
 $script:LogFilePath = $null
 
+# When $false (default), Get-PermissionsByNamespace shadows Write-Host with a
+# no-op for the duration of the call so the per-token / per-bit trace lines do
+# not flood the host stream. Set to $true (via Get-SecuritybyGroupByNamespace
+# -VerboseLogging) for live diagnosis. Write-Log calls below bypass the shadow
+# by using the fully-qualified cmdlet name, so warnings and errors still surface.
+$script:VerbosePermissionLogging = $false
+
 function Initialize-Log {
     <#
     .SYNOPSIS
@@ -40,11 +47,13 @@ function Write-Log {
     $logEntry += " $Message"
     if ($Uri) { $logEntry += " | URI: $Uri" }
 
-    # Console output (visible in pipeline logs)
+    # Console output (visible in pipeline logs). Use fully-qualified cmdlet name
+    # so this output bypasses any Write-Host shadow defined by callers (see
+    # Get-PermissionsByNamespace, which suppresses bare Write-Host noise).
     switch ($Level) {
-        'Warning' { Write-Host $logEntry -ForegroundColor Yellow }
-        'Error'   { Write-Host $logEntry -ForegroundColor Red }
-        default   { Write-Host $logEntry }
+        'Warning' { Microsoft.PowerShell.Utility\Write-Host $logEntry -ForegroundColor Yellow }
+        'Error'   { Microsoft.PowerShell.Utility\Write-Host $logEntry -ForegroundColor Red }
+        default   { Microsoft.PowerShell.Utility\Write-Host $logEntry }
     }
 
     # File output
@@ -618,8 +627,16 @@ function Get-SecuritybyGroupByNamespace()
         $projectName,
         [Parameter(Mandatory = $false)]
         [ValidateSet('JSON','CSV','Both')]
-        [string]$OutputFormat = 'JSON'
+        [string]$OutputFormat = 'JSON',
+        [Parameter(Mandatory = $false)]
+        [bool]$VerboseLogging = $false
     )
+
+    # Toggle module-scoped flag that Get-PermissionsByNamespace reads to decide
+    # whether to shadow Write-Host. Default is quiet; pass -VerboseLogging $true
+    # (pipeline param VerbosePermissionLogging=true) to restore the per-token /
+    # per-bit trace output for live diagnosis.
+    $script:VerbosePermissionLogging = $VerboseLogging
 
     # Base64-encodes the Personal Access Token (PAT) appropriately
     $authorization = GetVSTSCredential -Token $PAT
@@ -797,12 +814,30 @@ function Get-SecuritybyGroupByNamespace()
 
     $today = Get-Date -Format "MM-dd-yyyy"
 
+    # ----- Org-level lookup indexes (built once, reused for every project) -----
+    # The per-ACE switch in Get-PermissionsByNamespace previously did an O(N)
+    # Where-Object scan over $allGroupInfo for every ACE descriptor. That fires
+    # millions of times on a large all-projects run and is a primary GC pressure
+    # source. Build the FullDescriptor -> entry hashtable once here.
+    $groupInfoByFullDescriptor = @{}
+    foreach ($gi in $allGroupInfo) {
+        if ($gi.FullDescriptor) { $groupInfoByFullDescriptor[$gi.FullDescriptor] = $gi }
+    }
+
+    # ----- Per-namespace ACL cache (built lazily across the project loop) -----
+    # Previously the recurse=True ACL list (one large response per namespace) was
+    # re-fetched for every project. The response is identical across projects, so
+    # cache it on the first hit and reuse for all subsequent projects. This is the
+    # single biggest allocator removed by this refactor.
+    $aclCacheByNamespace = @{}
+
     # list of namespaces that are deprecated or do not exist as output to this code as the value returned was 0 ACLs to the namespace.
     $noNamespaces = "ServicingOrchestration","IdentityPicker","Security","Social","DataProvider","WorkItemTrackingConfiguration","CrossProjectWidgetView","WebPlatform","WorkItemsHub","Location","SettingEntries","Test Management","StrongBox","WorkItemTracking","Job","ViewActivityPaneSecurity","Graph","Registry","Favorites","ProjectAnalysisLanguageMetrics","TeamLabSecurity","Proxy","VersionControlItems2","UtilizationPermissions","OrganizationalLevelData","EventPublish","EventSubscription","WorkItemTrackingProvision","PipelineCachePrivileges","ExtensionManagement"
     # Loop through each project, if multiple
     foreach ($projectDetail in $projectDetails) {
-        # Coalesce all service users into another object with the descriptor
-        $allSvcUsers = @()
+        # Coalesce all service users into another object with the descriptor.
+        # Use List[object] (not @() + +=) so we don't reallocate on every Add.
+        $allSvcUsers = [System.Collections.Generic.List[object]]::new()
         foreach ($userFound in $allUsers) {
             if ($userFound.descriptor -like "svc.*") {
                 $svcUserDescriptor = Get-DescriptorFromGroup -dscriptor $userFound.descriptor
@@ -822,8 +857,15 @@ function Get-SecuritybyGroupByNamespace()
                     }
                     # else: displayName already has the best name available (deleted project, etc.)
                 }
-                $allSvcUsers += $svcUserInfo
+                $allSvcUsers.Add($svcUserInfo)
             }
+        }
+
+        # Per-project FullDescriptor index for the per-ACE Service Identity lookup.
+        # Replaces a O(N) Where-Object scan that fires for every Service ACE.
+        $svcUsersByFullDescriptor = @{}
+        foreach ($su in $allSvcUsers) {
+            if ($su.FullDescriptor) { $svcUsersByFullDescriptor[$su.FullDescriptor] = $su }
         }
 
         Write-Log -Message "Project Name: $($projectDetail.name)" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
@@ -858,8 +900,25 @@ function Get-SecuritybyGroupByNamespace()
             # Treat both $null and an empty collection as "N/A" so the downstream mandatory
             # parameter binding does not fail when PowerShell unrolls @() to nothing.
             if ($null -eq $tokenDetails -or ($tokenDetails -is [System.Collections.ICollection] -and $tokenDetails.Count -eq 0)) { $tokenDetails = "N/A" }
+
+            # Lazily fetch the per-namespace ACL list once across the entire run.
+            # The recurse=True response is identical for every project, so caching it
+            # eliminates the largest repeated allocation (and the largest GC pressure
+            # source) in the all-projects code path.
+            if (-not $aclCacheByNamespace.ContainsKey($namespace.namespaceId)) {
+                try {
+                    $aclUri = $userParams.HTTP_preFix + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/accesscontrollists/" + $namespace.namespaceId + "?includeExtendedInfo=True&recurse=True&api-version=7.2-preview.1"
+                    $aclCacheByNamespace[$namespace.namespaceId] = Invoke-AdoRestMethod -Uri $aclUri -Method Get -Headers $authorization
+                }
+                catch {
+                    Write-Log -Message "ACL prefetch failed for namespace $($namespace.name): $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace' -Uri $aclUri
+                    $aclCacheByNamespace[$namespace.namespaceId] = [PSCustomObject]@{ value = @() }
+                }
+            }
+            $aclListForNs = $aclCacheByNamespace[$namespace.namespaceId]
+
             # Get the permissions for the namespace
-            $nsPermissions = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct
+            $nsPermissions = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct -aclList $aclListForNs -groupInfoByFullDescriptor $groupInfoByFullDescriptor -svcUsersByFullDescriptor $svcUsersByFullDescriptor
             if ($nsPermissions) {
                 $allPermissions.AddRange([PSObject[]]$nsPermissions)
             }
@@ -882,10 +941,12 @@ function Get-SecuritybyGroupByNamespace()
         # is already flushed to disk above and no longer referenced. Hint the .NET GC
         # to reclaim it now so memory does not creep up across a long all-projects run
         # on a memory-capped container. Org-level caches ($allNamespaces, $allUsers,
-        # $allGroupInfo, etc.) remain referenced and are NOT reclaimed.
+        # $allGroupInfo, $aclCacheByNamespace, $groupInfoByFullDescriptor) remain
+        # referenced and are NOT reclaimed.
         # Cross-platform (Windows/Linux, PS 5.1/7.x).
-        $allPermissions = $null
-        $allSvcUsers    = $null
+        $allPermissions          = $null
+        $allSvcUsers             = $null
+        $svcUsersByFullDescriptor = $null
         [System.GC]::Collect()
         [System.GC]::WaitForPendingFinalizers()
         [System.GC]::Collect()
@@ -922,8 +983,27 @@ Function Get-PermissionsByNamespace()
         [Parameter(Mandatory = $true)]
         $VSTSMasterAcct,
         [Parameter(Mandatory = $true)]
-        $dirRoot      
+        $dirRoot,
+        # Pre-fetched ACL list for this namespace (cached across all projects in caller).
+        # Shape: PSCustomObject with .value array (matches Invoke-RestMethod result).
+        [Parameter(Mandatory = $true)]
+        $aclList,
+        # FullDescriptor -> groupInfo entry (built once across all projects in caller).
+        [Parameter(Mandatory = $true)]
+        [hashtable]$groupInfoByFullDescriptor,
+        # FullDescriptor -> svcUserInfo entry (built once per project in caller).
+        [Parameter(Mandatory = $true)]
+        [hashtable]$svcUsersByFullDescriptor
     )
+
+    # Suppress the per-token / per-bit Write-Host trace lines for the duration of
+    # this call when the caller did not request -VerboseLogging. The bare Write-Host
+    # calls inside this function fire millions of times on a large all-projects run
+    # and were a primary OOM contributor. Write-Log is unaffected because Write-Log
+    # routes its console output through the fully-qualified cmdlet name.
+    if (-not $script:VerbosePermissionLogging) {
+        function Write-Host { } # local no-op shadow; auto-removed when function returns
+    }
 
     $projName = $projectInfo.name
     $projectId = $projectInfo.id
@@ -943,34 +1023,43 @@ Function Get-PermissionsByNamespace()
     # Work on namespace
     $ns =  $Namespace
 
-    $aclListByNamespace = ""
+    # Pre-built bit -> action lookup. Replaces an O(N) Where-Object scan that ran
+    # 6 times per ACE (one for each Allow/EffectiveAllow/InheritedAllow/Deny/
+    # EffectiveDeny/InheritedDeny bit decode loop) -> millions of scans per run.
+    $nsActionsByBit = @{}
+    foreach ($act in $ns.actions) { $nsActionsByBit[$act.bit] = $act }
+
+    # Use the caller-provided cached ACL list (fetched once per namespace across
+    # the whole project loop). This was previously re-fetched per (project x
+    # namespace), which on a 60-project / 30-namespace run meant ~1700 redundant
+    # large-payload allocations.
+    $aclListByNamespace = $aclList
     $permissions = [System.Collections.Generic.List[PSObject]]::new()
 
-    # find all access control lists for the given namespace and group
-    try {
-        $grpUri = $userParams.HTTP_preFix  + "://dev.azure.com/" + $VSTSMasterAcct + "/_apis/accesscontrollists/" + $ns.namespaceId + "?includeExtendedInfo=True&recurse=True&api-version=7.2-preview.1"
-        $aclListByNamespace = Invoke-AdoRestMethod -Uri $grpUri -Method Get -Headers $authorization 
-    }
-    catch {
-        Write-Log -Message "Error in namespace $($ns.name): $($_.Exception.Message)" -Level 'Error' -FunctionName 'Get-PermissionsByNamespace' -Uri $grpUri
-    }
-    
-    $tokenMatches = @()
+    # Set of tokens matched in the tokenData walk below. HashSet[string] gives
+    # O(1) Contains() in the per-ACE switch instead of O(N) -in / .token scans.
+    $matchedTokens = [System.Collections.Generic.HashSet[string]]::new()
     # Given the tokenData, which contains all the namespace objects for the project...
     foreach ($obj in $tokenData) {
         switch ($ns.name) {
             'DashboardsPrivileges' {
-                $tokenMatches += $aclListByNamespace.value | Where-Object { $_.token -like "*$($obj.id)*" }
+                foreach ($m in @($aclListByNamespace.value | Where-Object { $_.token -like "*$($obj.id)*" })) {
+                    [void]$matchedTokens.Add($m.token)
+                }
             }
             'Build' {
                 #aclMatch
                 if ($obj.uri) {
                     $defId = $obj.uri.split('/')[-1]
-                    $tokenMatches += $aclListByNamespace.value | Where-Object { $_.token -like "$projectId/$defId" }
+                    foreach ($m in @($aclListByNamespace.value | Where-Object { $_.token -like "$projectId/$defId" })) {
+                        [void]$matchedTokens.Add($m.token)
+                    }
                 }
             }
             'VersionControlItems' {
-                $tokenMatches += $aclListByNamespace.value | Where-Object { $_.token -eq "`$/$projName"}
+                foreach ($m in @($aclListByNamespace.value | Where-Object { $_.token -eq "`$/$projName"})) {
+                    [void]$matchedTokens.Add($m.token)
+                }
             }
         }
     } 
@@ -983,13 +1072,11 @@ Function Get-PermissionsByNamespace()
             'DashboardsPrivileges' {
                 if ($aclToken.token -like "`$/$projectId/00000000-0000-0000-0000-000000000000/*") {
                     # Individual Project Dashboards Permissions
-                    $tokenMatches.token | ForEach-Object {
-                        if ($aclToken.token -eq $_) {
-                            $match = $true
-                            $matchComponent = ($tokenData | Where-Object { $_.Id -eq $aclToken.token.split('/')[-1] }).name
-                            $matchName = "'$matchComponent' - Project Dashboard"
-                            Write-Host "TokenData Match: $matchName"
-                        }
+                    if ($matchedTokens.Contains($aclToken.token)) {
+                        $match = $true
+                        $matchComponent = ($tokenData | Where-Object { $_.Id -eq $aclToken.token.split('/')[-1] }).name
+                        $matchName = "'$matchComponent' - Project Dashboard"
+                        Write-Host "TokenData Match: $matchName"
                     }                    
                 } elseif ($aclToken.token -eq "`$/$projectId/00000000-0000-0000-0000-000000000000") {
                     # Project Dashboards Overall Permissions
@@ -1000,7 +1087,7 @@ Function Get-PermissionsByNamespace()
                     $teamGrpName = ($groupInfo | Where-Object { $_.OriginId -eq $aclTokenSplit[2] }).GroupName
                     if ($aclTokenSplit.count -eq 4) {
                         # Individual Team Dashboards Permissions
-                        $tokenMatches.Token | ForEach-Object {
+                        if ($matchedTokens.Contains($aclToken.token)) {
                             $match = $true
                             $matchComponent = ($tokenData | Where-Object { $_.Id -eq $aclTokenSplit[-1] }).name
                             $matchName = "'$matchComponent' - '$TeamGrpName' - Team Dashboard"
@@ -1018,7 +1105,7 @@ Function Get-PermissionsByNamespace()
                     $match = $true
                     $matchName = "$projName - General Project Build"
                     Write-Host "non-tokenData ACL match: $matchName"                    
-                } elseif ($aclToken.token -in $tokenMatches.token) {
+                } elseif ($matchedTokens.Contains($aclToken.token)) {
                     # Build tokens are "<projectId>/<defId>" (or "<projectId>/<folderId>/<defId>"
                     # for builds in folders). Resolve the trailing segment to its build
                     # definition name + folder path so the report shows a human-readable
@@ -1043,7 +1130,7 @@ Function Get-PermissionsByNamespace()
                 }                           
             }
             'VersionControlItems' {
-                if (($aclToken.token -eq "`$/$projName") -and ($aclToken.token -in $tokenMatches.token)) {
+                if (($aclToken.token -eq "`$/$projName") -and $matchedTokens.Contains($aclToken.token)) {
                     $match = $true
                     $matchName = "$/$projName"
                     Write-Host "TokenData Match: $matchName"
@@ -1505,7 +1592,7 @@ Function Get-PermissionsByNamespace()
                 $ug = ""
 
                 if ($_.value.descriptor -like "Microsoft.TeamFoundation.Identity*") {
-                    $ident = $groupInfo | Where-Object { $_.FullDescriptor -eq $currentDescriptor }
+                    $ident = $groupInfoByFullDescriptor[$currentDescriptor]
 
                     # Descriptor that starts with 'Microsoft.TeamFoundation.Identity' not found in list of groups previous gathered. 
                     # Gather name using identity lookup.
@@ -1559,7 +1646,7 @@ Function Get-PermissionsByNamespace()
                         Write-Host "GroupName: $ug"                        
                     }
                 } elseif ($_.value.descriptor -like "Microsoft.TeamFoundation.ServiceIdentity*") {
-                    $currentUser = $allSvcUsers | Where-Object { $_.FullDescriptor -eq $currentDescriptor }
+                    $currentUser = $svcUsersByFullDescriptor[$currentDescriptor]
                     if ($currentUser) {
                         $ugRawDataDumpName = $ug = $currentUser.SvcUserName
                     }
@@ -1705,7 +1792,7 @@ Function Get-PermissionsByNamespace()
                             
                             # find bit in action list
                             $raise = [Math]::Pow(2, $Allowplace)
-                            $bit = $ns.actions | Where-Object {$_.bit -eq $raise }
+                            $bit = $nsActionsByBit[$raise]
 
                             if ($bit) {
                                 Write-Host "  $($bit.displayName) : Allow"
@@ -1747,7 +1834,7 @@ Function Get-PermissionsByNamespace()
                                 if( $effAllow.Substring($a,1) -ge 1)
                                 {
                                     $raise = [Math]::Pow(2, $effAllowplace)
-                                    $bit = $ns.actions | Where-Object {$_.bit -eq $raise }
+                                    $bit = $nsActionsByBit[$raise]
                                     
                                     if ($bit) {
                                         Write-Host "  $($bit.displayName) : Allow(Effective)"
@@ -1792,7 +1879,7 @@ Function Get-PermissionsByNamespace()
                             if( $inhAllow.Substring($a,1) -ge 1)
                             {
                                 $raise = [Math]::Pow(2, $inhAllowplace)
-                                $bit = $ns.actions | Where-Object {$_.bit -eq $raise }
+                                $bit = $nsActionsByBit[$raise]
 
                                 if ($bit) {
                                     Write-Host "  $($bit.displayName) : Allow(Inherited)"
@@ -1832,7 +1919,7 @@ Function Get-PermissionsByNamespace()
                         if( $permDeny.Substring($a,1) -ge 1)
                         {
                             $raise = [Math]::Pow(2, $inhAllowplace)
-                            $bit = $ns.actions | Where-Object {$_.bit -eq $raise }
+                            $bit = $nsActionsByBit[$raise]
 
                             if ($bit) {
                                 Write-Host "  $($bit.displayName) : Deny"
@@ -1876,7 +1963,7 @@ Function Get-PermissionsByNamespace()
                             {
                                 
                                 $raise = [Math]::Pow(2, $EffDenyplace)
-                                $bit = $ns.actions | Where-Object {$_.bit -eq $raise }
+                                $bit = $nsActionsByBit[$raise]
 
                                 if ($bit) {
                                     Write-Host "  $($bit.displayName) : Deny(Effective)"
@@ -1921,7 +2008,7 @@ Function Get-PermissionsByNamespace()
                             {
                                 
                                 $raise = [Math]::Pow(2, $EffDenyplace)
-                                $bit = $ns.actions | Where-Object {$_.bit -eq $raise }
+                                $bit = $nsActionsByBit[$raise]
 
                                 if ($bit) {
                                     Write-Host "  $($bit.displayName) : Deny(Inherited)"

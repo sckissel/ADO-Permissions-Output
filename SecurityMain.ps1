@@ -26,7 +26,9 @@ param (
     [string]$RecurseAADGroups,
     [Parameter(Mandatory=$false, HelpMessage="Output format: JSON (default), CSV, or Both")]
     [ValidateSet('JSON','CSV','Both')]
-    [string]$OutputFormat = 'JSON'
+    [string]$OutputFormat = 'JSON',
+    [Parameter(Mandatory=$false, HelpMessage="Set to True for verbose per-token / per-bit console trace output during permissions extract (very noisy; default False)")]
+    [string]$VerboseLogging = "False"
 )
 
 #import modules
@@ -61,7 +63,7 @@ if ($IncludePermissions -ne "True" -and $IncludeMembership -ne "True") {
 # Get all groups and their permissions
 if ($IncludePermissions -eq "True") {
     Write-Log -Message "Calling 'Get-SecurityGroupByNamespace'" -Level 'Info' -FunctionName 'SecurityMain'
-    Get-SecuritybyGroupByNamespace -userParams $userParameters -rawDataDump $userParameters.rawDataFile -getAllProjects $allProjects -outFileName $userParameters.GroupFileName -PAT $PAT -VSTSMasterAcct $VSTSMasterAcct -projectName $projectName -dirRoot $DirRoot -OutputFormat $OutputFormat
+    Get-SecuritybyGroupByNamespace -userParams $userParameters -rawDataDump $userParameters.rawDataFile -getAllProjects $allProjects -outFileName $userParameters.GroupFileName -PAT $PAT -VSTSMasterAcct $VSTSMasterAcct -projectName $projectName -dirRoot $DirRoot -OutputFormat $OutputFormat -VerboseLogging ($VerboseLogging -eq "True")
 } else {
     Write-Log -Message "Skipping namespace permissions extract (IncludePermissions=False)" -Level 'Info' -FunctionName 'SecurityMain'
 }
