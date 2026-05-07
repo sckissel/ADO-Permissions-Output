@@ -3,7 +3,90 @@ title: Changelog
 description: Version history and notable changes for ADO Permissions Output
 ---
 
-## v1.1.0 (2026-04-27)
+## v1.1.2 (2026-05-07)
+
+### Fixed
+
+* **ACL prefetch failures were logged at Warning and silently produced empty
+  reports.** When the per-namespace `accesscontrollists` REST call threw
+  (transient throttling, auth expiry, etc.), the catch block in
+  `Get-SecuritybyGroupByNamespace` cached `value=@()` and continued at
+  Warning severity, so the pipeline finished green with permissions for that
+  namespace missing across every project. Now logged at Error so the failure
+  is unmistakable in pipeline output. Empty-cache behavior preserved so a
+  single namespace failure does not abort the whole run. Caught by Copilot
+  review on PR #5.
+
+* **Identity-resolution failure branch was silently swallowed.** The
+  `Get-PermissionsByNamespace` `Write-Host` shadow installed for
+  `VerbosePermissionLogging=$false` (the default) also suppressed the
+  error-path `Write-Host "Error : ..."` call in the identity-lookup else
+  branch. The original line also used `+` concatenation that `Write-Host`
+  does not honor, so the message was mangled even when verbose. Replaced
+  with `Write-Log -Level 'Error'`, which bypasses the shadow via the
+  fully-qualified `Microsoft.PowerShell.Utility\Write-Host` call inside
+  `Write-Log`. Caught by Copilot review on PR #5.
+
+* **Deny permission rows referenced wrong action bit.** The Deny decode loop in
+  `Get-PermissionsByNamespace` (`SecurityHelper.psm1`) computed `$raise` from
+  `$inhAllowplace` instead of `$Denyplace`, so Deny rows reported the action
+  bit from a previously-iterated Allow loop rather than the current Deny bit
+  position. Pre-existing latent bug. Surfaced by Copilot review on PR #5.
+  Output for any namespace with non-zero `deny` will differ from prior runs.
+
+* **Bit-decode hashtable lookup type mismatch.** The perf refactor below
+  replaced `$ns.actions | Where-Object { $_.bit -eq $raise }` with an
+  `$nsActionsByBit[$raise]` hashtable lookup. Hashtable keys deserialized
+  from JSON via `ConvertFrom-Json` are `[Int64]`, but `[Math]::Pow` returns
+  `[Double]`, and the hashtable indexer uses `.Equals()` which does not
+  coerce types. Without the cast all 6 bit-decode loops would silently
+  return `$null` and drop every permission entry. All 6 sites now use
+  `$raise = [int][Math]::Pow(2, $place)`.
+
+### Changed
+
+* **Memory-pressure remediation for large orgs.** Several allocations in
+  `SecurityHelper.psm1` were per-project or per-ACL when they could be
+  per-run or lazily-cached. Reworked to keep the working set flat as the
+  project count grows:
+  - `$groupInfoByFullDescriptor` is now built once per run from
+    `$allGroupInfo` and reused, instead of rebuilt per project.
+  - `$aclCacheByNamespace` lazily fetches each namespace's ACL list once
+    and reuses it across projects (validated safe: ACL list for a given
+    namespace is org-scoped, not project-scoped).
+  - `$svcUsersByFullDescriptor` is built per project from the project's
+    `$allSvcUsers` and explicitly nulled along with `$allPermissions` and
+    `$allSvcUsers` in a per-project GC sweep.
+  - Inside `Get-PermissionsByNamespace`, `$ns.actions` is collapsed once
+    into `$nsActionsByBit` and reused across all 6 bit-decode loops in
+    place of repeated `Where-Object` scans, and `$matchedTokens` is now a
+    `[HashSet[string]]` for O(1) membership tests.
+  - Per-bit `Write-Host` calls are now gated behind a new
+    `$script:VerbosePermissionLogging` flag (off by default) so high-volume
+    runs do not spend CPU on host writes that are immediately discarded.
+
+* **New `VerbosePermissionLogging` pipeline parameter.** `main.yml` exposes a
+  boolean (default `false`) wired through `SecurityMain.ps1` to
+  `Get-SecuritybyGroupByNamespace -VerboseLogging`. Documented in `README.md`.
+
+## v1.1.1 (2026-04-29)
+
+### Changed
+
+* **List<T> conversion for user and group fetching.** `ProjectAndGroup.psm1`
+  and `SecurityHelper.psm1` now accumulate users and groups into
+  `System.Collections.Generic.List[object]` instead of array `+=` patterns,
+  which were O(n^2) and held duplicate intermediate arrays in memory. Reduces
+  peak working set on large orgs.
+* **`main.yml` pipeline updates** to support the refactored modules.
+
+### Fixed
+
+* **Null `principalName` guard in `ProjectAndGroup.psm1`.** Service identities
+  can return a null `principalName`; calling `.ToLower()` on it threw. Now
+  null-checked before normalization.
+* **`SecurityHelper.psm1` `AddRange` null guard** and removed an unnecessary
+  `[object[]]` cast that copied the source list.
 
 ### Fixed
 

@@ -147,6 +147,7 @@ When running the pipeline manually, the "Run pipeline" dialog presents these opt
 | `PublishArtifact` | boolean | `false` | Publish output as a pipeline artifact |
 | `CommitOutput` | boolean | `true` | Commit output to the `output` branch (uncheck for artifact-only runs) |
 | `GitAuthorEmail` | string | `pipeline@noreply.dev.azure.com` | Email used for git commits of output files |
+| `VerbosePermissionLogging` | boolean | `false` | Emit per-token and per-bit trace lines from the permissions extract. Off by default to keep pipeline logs readable and avoid host-stream allocation pressure on large all-projects runs. Enable only for live diagnosis. Warnings and errors always surface regardless of this setting. |
 
 At least one of `CommitOutput` or `PublishArtifact` must be enabled; the pipeline
 fails fast if both are disabled since output would be lost when the agent is reclaimed.

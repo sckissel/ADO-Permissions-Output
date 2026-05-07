@@ -46,6 +46,10 @@ parameters:
     type: string
     default: 'pipeline@noreply.dev.azure.com'
     displayName: 'Git commit author email (used for output commits)'
+  - name: VerbosePermissionLogging
+    type: boolean
+    default: false
+    displayName: 'Verbose permission-extract trace (per-token / per-bit; very large log; diagnostic only)'
 
 variables:
   - group: ADOPermissions  # Variable group containing secretPAT
@@ -69,7 +73,7 @@ jobs:
     displayName: 'Extract ADO permissions'
     inputs:
       filePath: './SecurityMain.ps1'
-      arguments: '-PAT "$(secretPAT)" -VSTSMasterAcct "${{ parameters.VSTSMasterAcct }}" -projectName "${{ parameters.ProjectName }}" -AllProjects "${{ parameters.AllProjects }}" -DirRoot "$(System.DefaultWorkingDirectory)/Security" -IncludePermissions "${{ parameters.IncludePermissions }}" -IncludeMembership "${{ parameters.IncludeMembership }}" -RecurseAADGroups "${{ parameters.RecurseAADGroups }}" -OutputFormat "${{ parameters.OutputFormat }}"'
+      arguments: '-PAT "$(secretPAT)" -VSTSMasterAcct "${{ parameters.VSTSMasterAcct }}" -projectName "${{ parameters.ProjectName }}" -AllProjects "${{ parameters.AllProjects }}" -DirRoot "$(System.DefaultWorkingDirectory)/Security" -IncludePermissions "${{ parameters.IncludePermissions }}" -IncludeMembership "${{ parameters.IncludeMembership }}" -RecurseAADGroups "${{ parameters.RecurseAADGroups }}" -OutputFormat "${{ parameters.OutputFormat }}" -VerboseLogging "${{ parameters.VerbosePermissionLogging }}"'
       pwsh: true
 
   - ${{ if eq(parameters.PublishArtifact, true) }}:
