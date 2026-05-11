@@ -3,6 +3,57 @@ title: Changelog
 description: Version history and notable changes for ADO Permissions Output
 ---
 
+## v1.1.3 (2026-05-11)
+
+### Fixed
+
+* **All permission entries silently dropped on PowerShell 7 Linux (regression
+  from v1.1.2).** The v1.1.2 perf refactor replaced an O(N) `Where-Object`
+  scan over `$ns.actions` with an `$nsActionsByBit` hashtable lookup. The
+  bit-decode call sites were updated to cast `[int][Math]::Pow(...)` so the
+  lookup-side type matched, but the insertion side
+  (`$nsActionsByBit[$act.bit] = $act`) was left untyped. On Windows
+  PowerShell the JSON deserializer returned both bits as `[Int32]` and the
+  lookup worked. On PowerShell 7 (Linux container) `System.Text.Json`
+  deserializes integer JSON values as `[Int64]`, and `Hashtable.Equals()`
+  does not coerce `Int32` vs `Int64` with the same numeric value, so every
+  `$nsActionsByBit[$raise]` lookup returned `$null` and every Allow / Deny
+  / Effective / Inherited bit was silently filtered out. Result: empty
+  permissions output for ~36 hours of production runs with no error and no
+  warning. Insertion now casts: `$nsActionsByBit[[int]$act.bit] = $act`.
+  Affects `Get-PermissionsByNamespace` in `SecurityHelper.psm1`.
+
+* **Empty permissions output produced no file and no warning.** When the
+  per-project permissions list was empty (which v1.1.2 silently caused on
+  every project), `Get-SecuritybyGroupByNamespace` skipped the file write
+  entirely. The pipeline therefore finished successfully with neither a
+  CSV nor a Warning indicating that nothing was extracted. Now always
+  writes the output file even when empty and emits a Warning naming the
+  project so the operator can correlate against the run.
+
+* **Single unresolved identity descriptor terminated the entire run.** The
+  identity-resolution else branch in `Get-PermissionsByNamespace` used
+  `break "ERROR OCCURRED!"` -- a labeled `break` with no matching enclosing
+  label. PowerShell unwinds the stack searching for the label and, finding
+  none, terminates the enclosing runspace. A single AAD guest, deleted user,
+  or otherwise unresolvable descriptor would silently kill the namespace
+  loop for that project (and on PS 7, the script). Replaced with `return`
+  from the `ForEach-Object` scriptblock so only the failing ACE is skipped.
+
+### Known Issues
+
+* **`Get-GroupMembershipReport` is the dominant runtime cost.** Customer
+  data point: 127 projects took ~3 hours for permissions extract and ~33
+  hours for group membership extract. The membership extract makes 2
+  baseline `graph/Memberships` GETs per group (down + up) plus per-unmatched-
+  descriptor `subjectlookup` POSTs and (with `-recurseAADGroups True`)
+  recursive `Contribution/HierarchyQuery` POSTs per nested AAD group. ADO
+  graph endpoints throttle per-PAT, so naive `ForEach-Object -Parallel`
+  will hit 429s and net little or no gain. Planned remediation in v1.1.4:
+  batch `subjectlookup` POSTs (the API accepts an array of `lookupKeys`)
+  and add cross-project membership / subject caches so org-level groups
+  are resolved once per run instead of once per project.
+
 ## v1.1.2 (2026-05-07)
 
 ### Fixed

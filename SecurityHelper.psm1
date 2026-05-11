@@ -927,17 +927,28 @@ function Get-SecuritybyGroupByNamespace()
             }
         }
 
-        # Write accumulated permissions as JSON and/or CSV
-        if ($allPermissions.Count -gt 0) {
-            if ($OutputFormat -in @('JSON','Both')) {
-                $allPermissions | ConvertTo-Json -Depth 10 | Out-File -FilePath $outFile -Force
-                Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $outFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
-            }
-            if ($OutputFormat -in @('CSV','Both')) {
-                $csvFile = $outFile -replace '\.json$', '.csv'
+        # Always write a permissions file -- even when empty -- so it is unmistakable
+        # whether the extract ran. A missing file used to mean either "the run never reached this project" 
+        # or "every permission entry was silently dropped" (e.g., the Int64-vs-Int32 hashtable bug fixed above);
+        # the two cases were indistinguishable from disk.
+        if ($allPermissions.Count -eq 0) {
+            Write-Log -Message "No permission entries collected for project $($projectDetail.name). Writing empty output file so the run is auditable." -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace'
+        }
+        if ($OutputFormat -in @('JSON','Both')) {
+            # Force array emission even for 0 or 1 entries so JSON is always a top-level array.
+            ConvertTo-Json -InputObject @($allPermissions) -Depth 10 | Out-File -FilePath $outFile -Force
+            Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $outFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
+        }
+        if ($OutputFormat -in @('CSV','Both')) {
+            $csvFile = $outFile -replace '\.json$', '.csv'
+            if ($allPermissions.Count -gt 0) {
                 $allPermissions | Export-Csv -Path $csvFile -NoTypeInformation -Force
-                Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $csvFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
             }
+            else {
+                # Empty CSV with header row so downstream tooling sees the file.
+                'Namespace,Project,Object,Type,UserGroupName,Description,PermissionType,Permission,Bit,PermissionName,DecodedValue,RawData,InheritedFrom' | Out-File -FilePath $csvFile -Force
+            }
+            Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $csvFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
         }
 
         # Per-project working set ($allPermissions, $allSvcUsers, $toDoNamespaces, etc.)
@@ -1029,8 +1040,15 @@ Function Get-PermissionsByNamespace()
     # Pre-built bit -> action lookup. Replaces an O(N) Where-Object scan that ran
     # 6 times per ACE (one for each Allow/EffectiveAllow/InheritedAllow/Deny/
     # EffectiveDeny/InheritedDeny bit decode loop) -> millions of scans per run.
+    #
+    # CRITICAL: cast keys to [int] on insertion. PowerShell 7 on Linux uses
+    # System.Text.Json for ConvertFrom-Json which returns integer JSON values
+    # as [Int64], while the lookup site builds [int] from [Math]::Pow. Hashtable
+    # uses .Equals() which returns $false for Int32 vs Int64 with the same
+    # numeric value, so without normalization every $bit lookup returns $null
+    # and every permission entry is silently dropped (no output file written).
     $nsActionsByBit = @{}
-    foreach ($act in $ns.actions) { $nsActionsByBit[$act.bit] = $act }
+    foreach ($act in $ns.actions) { $nsActionsByBit[[int]$act.bit] = $act }
 
     # Use the caller-provided cached ACL list (fetched once per namespace across
     # the whole project loop). This was previously re-fetched per (project x
@@ -1622,12 +1640,11 @@ Function Get-PermissionsByNamespace()
                             $des = $id.value.properties.Description.'$value'
                             Write-Host "GroupName: $ug"
                         } else {
-                            $ErrorMessage = $_.Exception.Message
-                            $FailedItem = $_.Exception.ItemName
-                            # Use Write-Log so the failure bypasses the local Write-Host shadow
-                            # installed for VerbosePermissionLogging=$false (the default).
-                            Write-Log -Message "Identity resolution returned no value. Error: $ErrorMessage Item: $FailedItem" -Level 'Error' -FunctionName 'Get-PermissionsByNamespace'
-                            break "ERROR OCCURRED!"
+                            # Identity API returned no value (deleted user, cross-tenant guest, etc.).
+                            # Use Write-Log so the message bypasses the local Write-Host shadow,
+                            # and `return` (not labeled `break`) so only this ACE is skipped.
+                            Write-Log -Message "Identity API returned no value for descriptor $currentDescriptor. Skipping this ACE." -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+                            return
                         }
                     }
                     else {
