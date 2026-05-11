@@ -928,7 +928,7 @@ function Get-SecuritybyGroupByNamespace()
         }
 
         # Always write a permissions file -- even when empty -- so it is unmistakable
-        # whether the extract ran. A missing file used to  mean either "the run never reached this project" 
+        # whether the extract ran. A missing file used to mean either "the run never reached this project" 
         # or "every permission entry was silently dropped" (e.g., the Int64-vs-Int32 hashtable bug fixed above);
         # the two cases were indistinguishable from disk.
         if ($allPermissions.Count -eq 0) {
@@ -1640,16 +1640,10 @@ Function Get-PermissionsByNamespace()
                             $des = $id.value.properties.Description.'$value'
                             Write-Host "GroupName: $ug"
                         } else {
-                            $ErrorMessage = $_.Exception.Message
-                            $FailedItem = $_.Exception.ItemName
-                            # Use Write-Log so the failure bypasses the local Write-Host shadow
-                            # installed for VerbosePermissionLogging=$false (the default).
-                            Write-Log -Message "Identity resolution returned no value for descriptor $currentDescriptor. Error: $ErrorMessage Item: $FailedItem. Skipping this ACE." -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
-                            # Previously: `break "ERROR OCCURRED!"` -- a labeled break with no matching
-                            # enclosing label. PowerShell unwinds the stack looking for the label and,
-                            # finding none, terminates the enclosing runspace. That made a single
-                            # unresolved identity silently kill the entire permissions run. Use
-                            # `return` from the ForEach-Object scriptblock to skip just this ACE.
+                            # Identity API returned no value (deleted user, cross-tenant guest, etc.).
+                            # Use Write-Log so the message bypasses the local Write-Host shadow,
+                            # and `return` (not labeled `break`) so only this ACE is skipped.
+                            Write-Log -Message "Identity API returned no value for descriptor $currentDescriptor. Skipping this ACE." -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
                             return
                         }
                     }
