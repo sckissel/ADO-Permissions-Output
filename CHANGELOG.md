@@ -3,6 +3,80 @@ title: Changelog
 description: Version history and notable changes for ADO Permissions Output
 ---
 
+## v1.1.4 (2026-05-26)
+
+### Fixed
+
+* **Permissions extract OOM on large single namespaces (notably Git Repositories).**
+  Prior fixes streamed data per namespace at the caller, but a single namespace could
+  still allocate a massive in-memory list before returning. `Get-PermissionsByNamespace`
+  now uses a bounded in-function buffer and flushes batches directly to JSON/CSV,
+  clearing the buffer each cycle. This keeps working-set growth bounded even when one
+  namespace has very high ACE volume.
+
+* **Membership extract OOM on large projects with deep group expansion.**
+  `Get-GroupMembershipReport` in `ProjectAndGroup.psm1` now uses the same bounded
+  batch streaming pattern per project, writing partial JSON/CSV batches and clearing
+  the buffer during processing instead of accumulating all rows before final write.
+
+### Changed
+
+* **Streaming write path moved to the producer level.** Permission-row serialization
+  now happens inside `Get-PermissionsByNamespace` (producer) instead of after namespace
+  return in `Get-SecuritybyGroupByNamespace` (consumer). This preserves existing
+  matching/decoding behavior while changing memory strategy only.
+
+* **Documentation updated for memory behavior and runtime characteristics.** README
+  and changelog now describe bounded batch streaming for both permissions and
+  membership extraction paths.
+
+* **Tightened flush granularity to fire inside hot loops (post-review hardening).**
+  Per [@copilot-pull-request-reviewer](https://github.com/copilot-pull-request-reviewer)
+  feedback on PR #7. The permissions extract now checks the flush threshold after
+  each ACE (inside the `ForEach-Object` over `acesDictionary.PSObject.Properties`)
+  rather than only after each ACL token; a single high-fan-out token decoding 6
+  bit groups across many ACEs could otherwise exceed the buffer before the per-token
+  check fired. The membership extract now flushes after each `$outputResult.Add`
+  inside `Resolve-GroupMembers`, `Resolve-AadGroupMembers`, and `Resolve-GroupMemberOf`
+  rather than only after each top-level group, eliminating the equivalent risk on
+  groups with very large recursive member sets.
+
+* **Counters widened to `[long]` to prevent Int32 overflow on extreme runs.**
+  `$projectPermCount` in `Get-SecuritybyGroupByNamespace`, the per-namespace count
+  returned by `Get-PermissionsByNamespace`, and the membership total in
+  `Get-GroupMembershipReport` are now `[long]`. PowerShell auto-promotes int+long,
+  but typing the accumulator up front makes the intent explicit and prevents
+  accidental `[int]` casts at call sites.
+
+* **Flush state wrapped in `[ref]` for safe cross-scope updates.** The flush
+  scriptblocks in both modules are now dot-sourced from inside `ForEach-Object`
+  pipelines and nested functions, which use child scopes where plain variable
+  assignment would silently leak the update into the inner scope. State variables
+  (`$nsTotalCount`, `$totalWritten`, `$jsonFirstBatch`, `$csvHeaderWritten`) are
+  now `[ref]` objects so the dot-sourced flush updates the outer scope reliably.
+
+* **Membership log messages split per output sink.** `Get-GroupMembershipReport`
+  previously logged a single "Wrote N membership entries to <file>.json" message
+  even when `OutputFormat` was `CSV` only (no JSON was written). The function now
+  logs the entry count against the actual sink that received it (JSON and/or CSV).
+
+* **Final flush moved into `finally{}` (post-review hardening, round 2).**
+  Per a second pass of [@copilot-pull-request-reviewer](https://github.com/copilot-pull-request-reviewer)
+  feedback on PR #7. `Get-GroupMembershipReport` previously invoked the final
+  `. $flushOutput` inside the `try{}` block, so a mid-stream exception would skip
+  the final flush while the `finally{}` block still emitted the closing JSON `]`
+  and disposed the writer -- producing a truncated-but-syntactically-valid JSON
+  file with no error indication. The final flush, the per-sink count log, and
+  the empty-CSV stub are now all inside `finally{}` (wrapped in a nested
+  `try/catch` so a flush failure still allows writer close).
+
+* **`Get-PermissionsByNamespace` defensively initializes ref parameters.**
+  When a caller supplied `-JsonWriter` or `-CsvFile` without the paired
+  `-JsonFirstBatch` / `-CsvHeaderWritten` `[ref]` state, the function would
+  silently emit invalid JSON (missing inter-batch commas) or a headerless CSV.
+  The function now initializes a local `[ref]` and emits a `Write-Log` warning
+  so the misconfiguration is visible while preserving correct output.
+
 ## v1.1.3 (2026-05-11)
 
 ### Fixed
@@ -49,10 +123,9 @@ description: Version history and notable changes for ADO Permissions Output
   descriptor `subjectlookup` POSTs and (with `-recurseAADGroups True`)
   recursive `Contribution/HierarchyQuery` POSTs per nested AAD group. ADO
   graph endpoints throttle per-PAT, so naive `ForEach-Object -Parallel`
-  will hit 429s and net little or no gain. Planned remediation in v1.1.4:
-  batch `subjectlookup` POSTs (the API accepts an array of `lookupKeys`)
-  and add cross-project membership / subject caches so org-level groups
-  are resolved once per run instead of once per project.
+  will hit 429s and net little or no gain. v1.1.4 added bounded batch
+  streaming to remove memory spikes, but API call volume (especially nested
+  AAD recursion and subject lookups) remains the dominant runtime factor.
 
 ## v1.1.2 (2026-05-07)
 

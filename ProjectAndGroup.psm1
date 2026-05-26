@@ -86,8 +86,7 @@ function Get-GroupMembershipReport(){
     # Build hashtable indexes over $allUsers so per-member descriptor / mail /
     # principalName / displayName lookups in Resolve-* helpers are O(1) instead
     # of an O(N) Where-Object pipeline scan. This avoids quadratic blow-up and
-    # the OutOfMemoryException seen on large orgs running on memory-capped
-    # Linux containers. Same data, just indexed.
+    # the OutOfMemoryException seen on large orgs. Same data, just indexed.
     $allUsersByDescriptor    = @{}
     $allUsersByMail          = @{}
     $allUsersByPrincipalName = @{}
@@ -504,6 +503,7 @@ function Get-GroupMembershipReport(){
                     LastAccessedDate = if ($entInfo) { $entInfo.LastAccessedDate } else { $null }
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
             }
             else {
                 # Fallback: API lookup for unmatched descriptors (nested groups, service accounts)
@@ -562,6 +562,7 @@ function Get-GroupMembershipReport(){
                     LastAccessedDate = if ($entInfo) { $entInfo.LastAccessedDate } else { $null }
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
 
                 # Recursively resolve nested groups - both AAD (via HierarchyQuery to capture
                 # disabled/deleted identities) and VSS/ADO groups (via direct Memberships API).
@@ -677,6 +678,7 @@ function Get-GroupMembershipReport(){
                 LastAccessedDate = if ($entInfo) { $entInfo.LastAccessedDate } else { $null }
             }
             $outputResult.Add($details)
+            if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
 
             # Recurse into nested AAD groups
             if ($memberType -eq "Group" -and $identity.descriptor -and ($identity.descriptor -like "aadgp.*")) {
@@ -731,6 +733,7 @@ function Get-GroupMembershipReport(){
                     Origin           = $matchedGroup.origin
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
             }
             else {
                 # Fallback: subject lookup for parent groups not in cache (org-level groups)
@@ -770,6 +773,7 @@ function Get-GroupMembershipReport(){
                     Origin           = $parentDetails.origin
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
             }
         }
     }
@@ -786,6 +790,49 @@ function Get-GroupMembershipReport(){
         $aadGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
         $vssGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
 
+        # Streaming output per project. State in [ref] so dot-sourced flush works
+        # from nested helpers (Resolve-*) without child-scope assignments being lost.
+        $projectOutFile = $dirRoot + $userParams.SecurityDir + $projDisplayName + "_" + $today + "_" + $outFile
+        $csvFile        = $projectOutFile -replace '\.json$', '.csv'
+        $writeJson      = ($OutputFormat -in @('JSON','Both'))
+        $writeCsv       = ($OutputFormat -in @('CSV','Both'))
+        $bufferLimit    = 2000
+        $totalWrittenRef     = [ref]([long]0)
+        $jsonWriter          = $null
+        $jsonFirstBatchRef   = [ref]$true
+        $csvHeaderWrittenRef = [ref]$false
+        if ($writeJson) {
+            $jsonWriter = [System.IO.StreamWriter]::new($projectOutFile, $false, [System.Text.UTF8Encoding]::new($false))
+            $jsonWriter.Write('[')
+        }
+        # Dot-sourced flush helper; updates state via [ref].Value so it works from nested scopes.
+        $flushOutput = {
+            if ($outputResult.Count -eq 0) { return }
+            if ($jsonWriter) {
+                $batchJson = ConvertTo-Json -InputObject $outputResult.ToArray() -Depth 10
+                $inner = $batchJson.Trim()
+                if ($inner.StartsWith('[')) { $inner = $inner.Substring(1) }
+                if ($inner.EndsWith(']'))   { $inner = $inner.Substring(0, $inner.Length - 1) }
+                $inner = $inner.Trim()
+                if ($inner) {
+                    if (-not $jsonFirstBatchRef.Value) { $jsonWriter.Write(',') }
+                    $jsonWriter.Write($inner)
+                    $jsonFirstBatchRef.Value = $false
+                }
+            }
+            if ($writeCsv) {
+                if (-not $csvHeaderWrittenRef.Value) {
+                    $outputResult | Export-Csv -Path $csvFile -NoTypeInformation -Force
+                    $csvHeaderWrittenRef.Value = $true
+                } else {
+                    $outputResult | Export-Csv -Path $csvFile -NoTypeInformation -Append
+                }
+            }
+            $totalWrittenRef.Value += [long]$outputResult.Count
+            $outputResult.Clear()
+        }
+
+        try {
         foreach ($group in $projectGroup.Group) {
             $prNameParts = $group.principalName.Split('\')
             $shortName = if ($prNameParts.Count -ge 2) { $prNameParts[1] } else { $group.principalName }
@@ -824,26 +871,41 @@ function Get-GroupMembershipReport(){
 
             # Member-Of: what parent groups this group belongs to (direction=up)
             Resolve-GroupMemberOf -descriptor $group.descriptor -groupName $group.principalName -projectDisplayName $projDisplayName -groupType $grpType -groupDescription $grpDesc
+
+            # Flush per top-level group when buffer reaches threshold.
+            if ($outputResult.Count -ge $bufferLimit) {
+                . $flushOutput
+            }
+        }
+        }
+        finally {
+            # Final flush inside finally so a mid-stream exception cannot truncate output
+            # (writer still emits closing ']' below). Inner try/catch keeps writer close path live.
+            try { . $flushOutput }
+            catch {
+                Write-Log -Message "Final flush failed for $projDisplayName : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport'
+            }
+            # Always close JSON array/file handle.
+            if ($jsonWriter) {
+                try { $jsonWriter.Write(']') } catch { }
+                try { $jsonWriter.Flush() }    catch { }
+                try { $jsonWriter.Dispose() }  catch { }
+                $jsonWriter = $null
+            }
+            # Per-sink row counts (inside finally so totals log even on abnormal exit).
+            if ($writeJson) {
+                Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $projectOutFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+            }
+            if ($writeCsv) {
+                # Touch empty CSV when no rows were emitted.
+                if (-not $csvHeaderWrittenRef.Value) {
+                    Set-Content -Path $csvFile -Value '' -Force
+                }
+                Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+            }
         }
 
-        # Write per-project output (JSON and/or CSV)
-        $projectOutFile = $dirRoot + $userParams.SecurityDir + $projDisplayName + "_" + $today + "_" + $outFile
-        Write-Log -Message "Writing $($outputResult.Count) membership entries to $projectOutFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
-        if ($OutputFormat -in @('JSON','Both')) {
-            $outputResult | ConvertTo-Json -Depth 10 | Out-File -FilePath $projectOutFile -Force
-        }
-        if ($OutputFormat -in @('CSV','Both')) {
-            $csvFile = $projectOutFile -replace '\.json$', '.csv'
-            $outputResult | Export-Csv -Path $csvFile -NoTypeInformation -Force
-            Write-Log -Message "Wrote CSV to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
-        }
-
-        # Per-project intermediates ($outputResult, $aadGroupsResolved, $vssGroupsResolved)
-        # are no longer referenced once written to disk. Hint the .NET GC to reclaim them
-        # before starting the next project so memory does not creep up across a long
-        # all-projects run on a memory-capped container. The org-level caches
-        # ($allUsers, $allGroups, indexes, etc.) are still referenced by enclosing-scope
-        # variables and are NOT reclaimed. Cross-platform (Windows/Linux, PS 5.1/7.x).
+        # Release per-project references before next project.
         $outputResult     = $null
         $aadGroupsResolved = $null
         $vssGroupsResolved = $null
