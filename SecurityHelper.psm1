@@ -1047,6 +1047,17 @@ Function Get-PermissionsByNamespace()
         [ref]$CsvHeaderWritten = $null
     )
 
+    # Defensive ref init: sink without its state ref would silently emit invalid JSON
+    # (missing commas) or headerless CSV. Local ref keeps output correct; warn so misuse is visible.
+    if ($JsonWriter -and (-not $JsonFirstBatch)) {
+        Write-Log -Message 'Get-PermissionsByNamespace: -JsonWriter supplied without -JsonFirstBatch ref; using local ref.' -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+        $JsonFirstBatch = [ref]$true
+    }
+    if ($CsvFile -and (-not $CsvHeaderWritten)) {
+        Write-Log -Message 'Get-PermissionsByNamespace: -CsvFile supplied without -CsvHeaderWritten ref; using local ref.' -Level 'Warning' -FunctionName 'Get-PermissionsByNamespace'
+        $CsvHeaderWritten = [ref]$false
+    }
+
     # Suppress the per-token / per-bit Write-Host trace lines for the duration of
     # this call when the caller did not request -VerboseLogging. The bare Write-Host
     # calls inside this function fire millions of times on a large all-projects run
@@ -1095,12 +1106,10 @@ Function Get-PermissionsByNamespace()
     $permissions = [System.Collections.Generic.List[PSObject]]::new()
 
     # Bounded buffer; flush periodically to avoid OOM on large namespaces.
-    # Counter is wrapped in [ref] so $flushBuffer can update it from inside the
-    # per-ACE ForEach-Object pipeline (which creates a child scope where direct
-    # variable assignment would silently leak the update into the inner scope).
+    # [ref] counter so $flushBuffer can update it from child scopes (ForEach-Object).
     $bufferLimit     = 2000
     $nsTotalCountRef = [ref]([long]0)
-    # Dot-sourced helper shares scope for clear/count updates.
+    # Dot-sourced flush helper; shares scope with caller for buffer/count updates.
     $flushBuffer = {
         if ($permissions.Count -eq 0) { return }
         if ($JsonWriter) {
@@ -2126,18 +2135,15 @@ Function Get-PermissionsByNamespace()
                     }
                 }    
 
-                # Per-ACE flush: a single ACL token can contain many ACEs and each
-                # ACE can emit up to ~192 rows across the 6 bit-decode loops above.
-                # Flushing only after the outer aclToken loop (below) leaves a wide
-                # memory window for high-fan-out tokens, so we check here too.
+                # Per-ACE flush: a single high-fan-out token can emit many rows
+                # across the 6 bit-decode loops; per-token flush alone is too coarse.
                 if (($JsonWriter -or $CsvFile) -and $permissions.Count -ge $bufferLimit) {
                     . $flushBuffer
                 }
             }
         }
 
-        # Safety flush per token (covers the case where $match was false above
-        # and the inner ForEach-Object did not run, plus any residual batch).
+        # Safety flush per token (handles unmatched namespaces and residual batches).
         if (($JsonWriter -or $CsvFile) -and $permissions.Count -ge $bufferLimit) {
             . $flushBuffer
         }

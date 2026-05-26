@@ -790,12 +790,8 @@ function Get-GroupMembershipReport(){
         $aadGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
         $vssGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
 
-        # Streaming output per project with bounded batch buffer.
-        # State is wrapped in [ref] objects so nested helpers (Resolve-GroupMembers,
-        # Resolve-GroupMemberOf, Resolve-AadGroupMembers) can trigger a flush via
-        # dot-source without their child-scope assignments to bool/int locals being
-        # lost. Direct assignment to a plain $true/$false/[int] would create a
-        # variable in the helper's scope and never reach this outer scope.
+        # Streaming output per project. State in [ref] so dot-sourced flush works
+        # from nested helpers (Resolve-*) without child-scope assignments being lost.
         $projectOutFile = $dirRoot + $userParams.SecurityDir + $projDisplayName + "_" + $today + "_" + $outFile
         $csvFile        = $projectOutFile -replace '\.json$', '.csv'
         $writeJson      = ($OutputFormat -in @('JSON','Both'))
@@ -809,8 +805,7 @@ function Get-GroupMembershipReport(){
             $jsonWriter = [System.IO.StreamWriter]::new($projectOutFile, $false, [System.Text.UTF8Encoding]::new($false))
             $jsonWriter.Write('[')
         }
-        # Dot-sourced helper updates local buffer/count/state via [ref].Value writes
-        # so it is safe to invoke from inside nested function scopes.
+        # Dot-sourced flush helper; updates state via [ref].Value so it works from nested scopes.
         $flushOutput = {
             if ($outputResult.Count -eq 0) { return }
             if ($jsonWriter) {
@@ -882,27 +877,31 @@ function Get-GroupMembershipReport(){
                 . $flushOutput
             }
         }
-
-        # Final flush for this project.
-        . $flushOutput
-        if ($writeJson) {
-            Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $projectOutFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
-        }
-        if ($writeCsv) {
-            # Touch empty CSV when no rows were emitted.
-            if (-not $csvHeaderWrittenRef.Value) {
-                Set-Content -Path $csvFile -Value '' -Force
-            }
-            Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
-        }
         }
         finally {
+            # Final flush inside finally so a mid-stream exception cannot truncate output
+            # (writer still emits closing ']' below). Inner try/catch keeps writer close path live.
+            try { . $flushOutput }
+            catch {
+                Write-Log -Message "Final flush failed for $projDisplayName : $($_.Exception.Message)" -Level 'Warning' -FunctionName 'Get-GroupMembershipReport'
+            }
             # Always close JSON array/file handle.
             if ($jsonWriter) {
                 try { $jsonWriter.Write(']') } catch { }
                 try { $jsonWriter.Flush() }    catch { }
                 try { $jsonWriter.Dispose() }  catch { }
                 $jsonWriter = $null
+            }
+            # Per-sink row counts (inside finally so totals log even on abnormal exit).
+            if ($writeJson) {
+                Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $projectOutFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+            }
+            if ($writeCsv) {
+                # Touch empty CSV when no rows were emitted.
+                if (-not $csvHeaderWrittenRef.Value) {
+                    Set-Content -Path $csvFile -Value '' -Force
+                }
+                Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
             }
         }
 

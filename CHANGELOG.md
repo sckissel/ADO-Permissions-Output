@@ -60,6 +60,23 @@ description: Version history and notable changes for ADO Permissions Output
   even when `OutputFormat` was `CSV` only (no JSON was written). The function now
   logs the entry count against the actual sink that received it (JSON and/or CSV).
 
+* **Final flush moved into `finally{}` (post-review hardening, round 2).**
+  Per a second pass of [@copilot-pull-request-reviewer](https://github.com/copilot-pull-request-reviewer)
+  feedback on PR #7. `Get-GroupMembershipReport` previously invoked the final
+  `. $flushOutput` inside the `try{}` block, so a mid-stream exception would skip
+  the final flush while the `finally{}` block still emitted the closing JSON `]`
+  and disposed the writer -- producing a truncated-but-syntactically-valid JSON
+  file with no error indication. The final flush, the per-sink count log, and
+  the empty-CSV stub are now all inside `finally{}` (wrapped in a nested
+  `try/catch` so a flush failure still allows writer close).
+
+* **`Get-PermissionsByNamespace` defensively initializes ref parameters.**
+  When a caller supplied `-JsonWriter` or `-CsvFile` without the paired
+  `-JsonFirstBatch` / `-CsvHeaderWritten` `[ref]` state, the function would
+  silently emit invalid JSON (missing inter-batch commas) or a headerless CSV.
+  The function now initializes a local `[ref]` and emits a `Write-Log` warning
+  so the misconfiguration is visible while preserving correct output.
+
 ## v1.1.3 (2026-05-11)
 
 ### Fixed
