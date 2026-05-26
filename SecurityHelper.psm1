@@ -896,7 +896,11 @@ function Get-SecuritybyGroupByNamespace()
         }
         $jsonFirstBatch = $true
         $csvHeaderWritten = $false
-        $projectPermCount = 0
+        # Use [long] to avoid Int32 overflow on extreme runs (>2.1B permission rows
+        # across many namespaces in a very large org). PowerShell auto-promotes int
+        # +-> long in arithmetic, but typing the accumulator up front makes the
+        # intent explicit and prevents accidental [int] casts at call sites.
+        [long]$projectPermCount = 0
 
         try {
         #get Direct permissions
@@ -952,7 +956,7 @@ function Get-SecuritybyGroupByNamespace()
             $jsonFirstBatch  = $jsonFirstRef.Value
             $csvHeaderWritten = $csvHeaderRef.Value
             if ($nsBatchCount -is [int] -or $nsBatchCount -is [long]) {
-                $projectPermCount += [int]$nsBatchCount
+                $projectPermCount += [long]$nsBatchCount
             }
         }
         }
@@ -1091,8 +1095,11 @@ Function Get-PermissionsByNamespace()
     $permissions = [System.Collections.Generic.List[PSObject]]::new()
 
     # Bounded buffer; flush periodically to avoid OOM on large namespaces.
-    $bufferLimit  = 2000
-    $nsTotalCount = 0
+    # Counter is wrapped in [ref] so $flushBuffer can update it from inside the
+    # per-ACE ForEach-Object pipeline (which creates a child scope where direct
+    # variable assignment would silently leak the update into the inner scope).
+    $bufferLimit     = 2000
+    $nsTotalCountRef = [ref]([long]0)
     # Dot-sourced helper shares scope for clear/count updates.
     $flushBuffer = {
         if ($permissions.Count -eq 0) { return }
@@ -1117,7 +1124,7 @@ Function Get-PermissionsByNamespace()
                 $permissions | Export-Csv -Path $CsvFile -NoTypeInformation -Append
             }
         }
-        $nsTotalCount += $permissions.Count
+        $nsTotalCountRef.Value += [long]$permissions.Count
         $permissions.Clear()
     }
 
@@ -2118,10 +2125,19 @@ Function Get-PermissionsByNamespace()
                         }
                     }
                 }    
+
+                # Per-ACE flush: a single ACL token can contain many ACEs and each
+                # ACE can emit up to ~192 rows across the 6 bit-decode loops above.
+                # Flushing only after the outer aclToken loop (below) leaves a wide
+                # memory window for high-fan-out tokens, so we check here too.
+                if (($JsonWriter -or $CsvFile) -and $permissions.Count -ge $bufferLimit) {
+                    . $flushBuffer
+                }
             }
         }
 
-        # Flush per token when buffer reaches threshold.
+        # Safety flush per token (covers the case where $match was false above
+        # and the inner ForEach-Object did not run, plus any residual batch).
         if (($JsonWriter -or $CsvFile) -and $permissions.Count -ge $bufferLimit) {
             . $flushBuffer
         }
@@ -2130,7 +2146,7 @@ Function Get-PermissionsByNamespace()
     # Final flush, then return streamed count or legacy in-memory list.
     if ($JsonWriter -or $CsvFile) {
         . $flushBuffer
-        return $nsTotalCount
+        return $nsTotalCountRef.Value
     }
     return $permissions
 }

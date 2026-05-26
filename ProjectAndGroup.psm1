@@ -503,6 +503,7 @@ function Get-GroupMembershipReport(){
                     LastAccessedDate = if ($entInfo) { $entInfo.LastAccessedDate } else { $null }
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
             }
             else {
                 # Fallback: API lookup for unmatched descriptors (nested groups, service accounts)
@@ -561,6 +562,7 @@ function Get-GroupMembershipReport(){
                     LastAccessedDate = if ($entInfo) { $entInfo.LastAccessedDate } else { $null }
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
 
                 # Recursively resolve nested groups - both AAD (via HierarchyQuery to capture
                 # disabled/deleted identities) and VSS/ADO groups (via direct Memberships API).
@@ -676,6 +678,7 @@ function Get-GroupMembershipReport(){
                 LastAccessedDate = if ($entInfo) { $entInfo.LastAccessedDate } else { $null }
             }
             $outputResult.Add($details)
+            if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
 
             # Recurse into nested AAD groups
             if ($memberType -eq "Group" -and $identity.descriptor -and ($identity.descriptor -like "aadgp.*")) {
@@ -730,6 +733,7 @@ function Get-GroupMembershipReport(){
                     Origin           = $matchedGroup.origin
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
             }
             else {
                 # Fallback: subject lookup for parent groups not in cache (org-level groups)
@@ -769,6 +773,7 @@ function Get-GroupMembershipReport(){
                     Origin           = $parentDetails.origin
                 }
                 $outputResult.Add($details)
+                if ($outputResult.Count -ge $bufferLimit) { . $flushOutput }
             }
         }
     }
@@ -786,20 +791,26 @@ function Get-GroupMembershipReport(){
         $vssGroupsResolved = [System.Collections.Generic.HashSet[string]]::new()
 
         # Streaming output per project with bounded batch buffer.
+        # State is wrapped in [ref] objects so nested helpers (Resolve-GroupMembers,
+        # Resolve-GroupMemberOf, Resolve-AadGroupMembers) can trigger a flush via
+        # dot-source without their child-scope assignments to bool/int locals being
+        # lost. Direct assignment to a plain $true/$false/[int] would create a
+        # variable in the helper's scope and never reach this outer scope.
         $projectOutFile = $dirRoot + $userParams.SecurityDir + $projDisplayName + "_" + $today + "_" + $outFile
         $csvFile        = $projectOutFile -replace '\.json$', '.csv'
         $writeJson      = ($OutputFormat -in @('JSON','Both'))
         $writeCsv       = ($OutputFormat -in @('CSV','Both'))
         $bufferLimit    = 2000
-        $totalWritten   = 0
-        $jsonWriter      = $null
-        $jsonFirstBatch  = $true
-        $csvHeaderWritten = $false
+        $totalWrittenRef     = [ref]([long]0)
+        $jsonWriter          = $null
+        $jsonFirstBatchRef   = [ref]$true
+        $csvHeaderWrittenRef = [ref]$false
         if ($writeJson) {
             $jsonWriter = [System.IO.StreamWriter]::new($projectOutFile, $false, [System.Text.UTF8Encoding]::new($false))
             $jsonWriter.Write('[')
         }
-        # Dot-sourced helper updates local buffer/count/state.
+        # Dot-sourced helper updates local buffer/count/state via [ref].Value writes
+        # so it is safe to invoke from inside nested function scopes.
         $flushOutput = {
             if ($outputResult.Count -eq 0) { return }
             if ($jsonWriter) {
@@ -809,20 +820,20 @@ function Get-GroupMembershipReport(){
                 if ($inner.EndsWith(']'))   { $inner = $inner.Substring(0, $inner.Length - 1) }
                 $inner = $inner.Trim()
                 if ($inner) {
-                    if (-not $jsonFirstBatch) { $jsonWriter.Write(',') }
+                    if (-not $jsonFirstBatchRef.Value) { $jsonWriter.Write(',') }
                     $jsonWriter.Write($inner)
-                    $jsonFirstBatch = $false
+                    $jsonFirstBatchRef.Value = $false
                 }
             }
             if ($writeCsv) {
-                if (-not $csvHeaderWritten) {
+                if (-not $csvHeaderWrittenRef.Value) {
                     $outputResult | Export-Csv -Path $csvFile -NoTypeInformation -Force
-                    $csvHeaderWritten = $true
+                    $csvHeaderWrittenRef.Value = $true
                 } else {
                     $outputResult | Export-Csv -Path $csvFile -NoTypeInformation -Append
                 }
             }
-            $totalWritten += $outputResult.Count
+            $totalWrittenRef.Value += [long]$outputResult.Count
             $outputResult.Clear()
         }
 
@@ -874,13 +885,15 @@ function Get-GroupMembershipReport(){
 
         # Final flush for this project.
         . $flushOutput
-        Write-Log -Message "Wrote $totalWritten membership entries to $projectOutFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+        if ($writeJson) {
+            Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $projectOutFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+        }
         if ($writeCsv) {
             # Touch empty CSV when no rows were emitted.
-            if (-not $csvHeaderWritten) {
+            if (-not $csvHeaderWrittenRef.Value) {
                 Set-Content -Path $csvFile -Value '' -Force
             }
-            Write-Log -Message "Wrote CSV to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
+            Write-Log -Message "Wrote $($totalWrittenRef.Value) membership entries to $csvFile" -Level 'Info' -FunctionName 'Get-GroupMembershipReport'
         }
         }
         finally {

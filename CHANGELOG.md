@@ -30,6 +30,36 @@ description: Version history and notable changes for ADO Permissions Output
   and changelog now describe bounded batch streaming for both permissions and
   membership extraction paths.
 
+* **Tightened flush granularity to fire inside hot loops (post-review hardening).**
+  Per [@copilot-pull-request-reviewer](https://github.com/copilot-pull-request-reviewer)
+  feedback on PR #7. The permissions extract now checks the flush threshold after
+  each ACE (inside the `ForEach-Object` over `acesDictionary.PSObject.Properties`)
+  rather than only after each ACL token; a single high-fan-out token decoding 6
+  bit groups across many ACEs could otherwise exceed the buffer before the per-token
+  check fired. The membership extract now flushes after each `$outputResult.Add`
+  inside `Resolve-GroupMembers`, `Resolve-AadGroupMembers`, and `Resolve-GroupMemberOf`
+  rather than only after each top-level group, eliminating the equivalent risk on
+  groups with very large recursive member sets.
+
+* **Counters widened to `[long]` to prevent Int32 overflow on extreme runs.**
+  `$projectPermCount` in `Get-SecuritybyGroupByNamespace`, the per-namespace count
+  returned by `Get-PermissionsByNamespace`, and the membership total in
+  `Get-GroupMembershipReport` are now `[long]`. PowerShell auto-promotes int+long,
+  but typing the accumulator up front makes the intent explicit and prevents
+  accidental `[int]` casts at call sites.
+
+* **Flush state wrapped in `[ref]` for safe cross-scope updates.** The flush
+  scriptblocks in both modules are now dot-sourced from inside `ForEach-Object`
+  pipelines and nested functions, which use child scopes where plain variable
+  assignment would silently leak the update into the inner scope. State variables
+  (`$nsTotalCount`, `$totalWritten`, `$jsonFirstBatch`, `$csvHeaderWritten`) are
+  now `[ref]` objects so the dot-sourced flush updates the outer scope reliably.
+
+* **Membership log messages split per output sink.** `Get-GroupMembershipReport`
+  previously logged a single "Wrote N membership entries to <file>.json" message
+  even when `OutputFormat` was `CSV` only (no JSON was written). The function now
+  logs the entry count against the actual sink that received it (JSON and/or CSV).
+
 ## v1.1.3 (2026-05-11)
 
 ### Fixed
