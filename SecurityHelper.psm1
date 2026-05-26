@@ -873,9 +873,32 @@ function Get-SecuritybyGroupByNamespace()
 
         # set output file directory and name (JSON output)
         $outFile = $dirRoot + $userParams.SecurityDir + $($projectDetail.name) + "_" + $today + "_" + ($outFileName -replace '\.txt$', '.json')
+        $csvFile = $outFile -replace '\.json$', '.csv'
         Write-Log -Message "OutFile: $outFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
-        $allPermissions = [System.Collections.Generic.List[PSObject]]::new()
-        
+
+        # Streaming output state. We no longer accumulate the entire project's
+        # permissions in memory before serializing -- a single large project can
+        # produce millions of [PSCustomObject] entries and OOM the runner. Instead,
+        # each namespace's batch is appended to disk as it completes, then released.
+        #
+        # JSON file is built as a streamed top-level array: write '[' up front,
+        # append each batch's elements (stripped of the outer '[]' from
+        # ConvertTo-Json) separated by commas, then close with ']' after the loop.
+        # CSV uses Export-Csv -Append (header written on first non-empty batch).
+        $writeJson = $OutputFormat -in @('JSON','Both')
+        $writeCsv  = $OutputFormat -in @('CSV','Both')
+        $jsonWriter = $null
+        if ($writeJson) {
+            # UTF-8 without BOM; matches prior ConvertTo-Json | Out-File default well enough
+            # for downstream JSON parsers. Buffered StreamWriter avoids one open/close per batch.
+            $jsonWriter = [System.IO.StreamWriter]::new($outFile, $false, [System.Text.UTF8Encoding]::new($false))
+            $jsonWriter.Write('[')
+        }
+        $jsonFirstBatch = $true
+        $csvHeaderWritten = $false
+        $projectPermCount = 0
+
+        try {
         #get Direct permissions
         # find namespace for given category or all categories
         $toDoNamespaces = @()
@@ -920,45 +943,46 @@ function Get-SecuritybyGroupByNamespace()
             }
             $aclListForNs = $aclCacheByNamespace[$namespace.namespaceId]
 
-            # Get the permissions for the namespace
-            $nsPermissions = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct -aclList $aclListForNs -groupInfoByFullDescriptor $groupInfoByFullDescriptor -svcUsersByFullDescriptor $svcUsersByFullDescriptor
-            if ($nsPermissions) {
-                $allPermissions.AddRange([PSObject[]]$nsPermissions)
+            # Stream namespace rows directly to JSON/CSV; return written count.
+            $nsBatchCount = 0
+            $jsonFirstRef = [ref]$jsonFirstBatch
+            $csvHeaderRef = [ref]$csvHeaderWritten
+            $nsBatchCount = Get-PermissionsByNamespace -Namespace $namespace -userParams $userParams -projectInfo $projectDetail -groupInfo $allGroupInfo -users $allUsers -tokenData $tokenDetails -rawDataDump $rawDataDump -outFile $outFile -dirRoot $dirRoot -VSTSMasterAcct $VSTSMasterAcct -aclList $aclListForNs -groupInfoByFullDescriptor $groupInfoByFullDescriptor -svcUsersByFullDescriptor $svcUsersByFullDescriptor -JsonWriter $jsonWriter -CsvFile (&{ if ($writeCsv) { $csvFile } else { $null } }) -JsonFirstBatch $jsonFirstRef -CsvHeaderWritten $csvHeaderRef
+            # Persist JSON/CSV state across namespaces.
+            $jsonFirstBatch  = $jsonFirstRef.Value
+            $csvHeaderWritten = $csvHeaderRef.Value
+            if ($nsBatchCount -is [int] -or $nsBatchCount -is [long]) {
+                $projectPermCount += [int]$nsBatchCount
+            }
+        }
+        }
+        finally {
+            # Always close JSON array/file handle.
+            if ($jsonWriter) {
+                try { $jsonWriter.Write(']') } catch { }
+                try { $jsonWriter.Flush() }    catch { }
+                try { $jsonWriter.Dispose() }  catch { }
+                $jsonWriter = $null
             }
         }
 
-        # Always write a permissions file -- even when empty -- so it is unmistakable
-        # whether the extract ran. A missing file used to mean either "the run never reached this project" 
-        # or "every permission entry was silently dropped" (e.g., the Int64-vs-Int32 hashtable bug fixed above);
-        # the two cases were indistinguishable from disk.
-        if ($allPermissions.Count -eq 0) {
+        # Keep empty output files so run results are auditable.
+        if ($projectPermCount -eq 0) {
             Write-Log -Message "No permission entries collected for project $($projectDetail.name). Writing empty output file so the run is auditable." -Level 'Warning' -FunctionName 'Get-SecuritybyGroupByNamespace'
         }
-        if ($OutputFormat -in @('JSON','Both')) {
-            # Force array emission even for 0 or 1 entries so JSON is always a top-level array.
-            ConvertTo-Json -InputObject @($allPermissions) -Depth 10 | Out-File -FilePath $outFile -Force
-            Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $outFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
+        if ($writeJson) {
+            # JSON already finalized in finally; just log count.
+            Write-Log -Message "Wrote $projectPermCount permission entries to $outFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
         }
-        if ($OutputFormat -in @('CSV','Both')) {
-            $csvFile = $outFile -replace '\.json$', '.csv'
-            if ($allPermissions.Count -gt 0) {
-                $allPermissions | Export-Csv -Path $csvFile -NoTypeInformation -Force
-            }
-            else {
+        if ($writeCsv) {
+            if (-not $csvHeaderWritten) {
                 # Empty CSV with header row so downstream tooling sees the file.
                 'Namespace,Project,Object,Type,UserGroupName,Description,PermissionType,Permission,Bit,PermissionName,DecodedValue,RawData,InheritedFrom' | Out-File -FilePath $csvFile -Force
             }
-            Write-Log -Message "Wrote $($allPermissions.Count) permission entries to $csvFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
+            Write-Log -Message "Wrote $projectPermCount permission entries to $csvFile" -Level 'Info' -FunctionName 'Get-SecuritybyGroupByNamespace'
         }
 
-        # Per-project working set ($allPermissions, $allSvcUsers, $toDoNamespaces, etc.)
-        # is already flushed to disk above and no longer referenced. Hint the .NET GC
-        # to reclaim it now so memory does not creep up across a long all-projects run
-        # on a memory-capped container. Org-level caches ($allNamespaces, $allUsers,
-        # $allGroupInfo, $aclCacheByNamespace, $groupInfoByFullDescriptor) remain
-        # referenced and are NOT reclaimed.
-        # Cross-platform (Windows/Linux, PS 5.1/7.x).
-        $allPermissions          = $null
+        # Release per-project references before next project.
         $allSvcUsers             = $null
         $svcUsersByFullDescriptor = $null
         [System.GC]::Collect()
@@ -1007,7 +1031,16 @@ Function Get-PermissionsByNamespace()
         [hashtable]$groupInfoByFullDescriptor,
         # FullDescriptor -> svcUserInfo entry (built once per project in caller).
         [Parameter(Mandatory = $true)]
-        [hashtable]$svcUsersByFullDescriptor
+        [hashtable]$svcUsersByFullDescriptor,
+        # Optional streaming sinks for bounded-memory writes.
+        [Parameter(Mandatory = $false)]
+        $JsonWriter = $null,
+        [Parameter(Mandatory = $false)]
+        [string]$CsvFile = $null,
+        [Parameter(Mandatory = $false)]
+        [ref]$JsonFirstBatch = $null,
+        [Parameter(Mandatory = $false)]
+        [ref]$CsvHeaderWritten = $null
     )
 
     # Suppress the per-token / per-bit Write-Host trace lines for the duration of
@@ -1056,6 +1089,37 @@ Function Get-PermissionsByNamespace()
     # large-payload allocations.
     $aclListByNamespace = $aclList
     $permissions = [System.Collections.Generic.List[PSObject]]::new()
+
+    # Bounded buffer; flush periodically to avoid OOM on large namespaces.
+    $bufferLimit  = 2000
+    $nsTotalCount = 0
+    # Dot-sourced helper shares scope for clear/count updates.
+    $flushBuffer = {
+        if ($permissions.Count -eq 0) { return }
+        if ($JsonWriter) {
+            # Splice batch items into caller's open JSON array.
+            $batchJson = ConvertTo-Json -InputObject $permissions.ToArray() -Depth 10
+            $inner = $batchJson.Trim()
+            if ($inner.StartsWith('[')) { $inner = $inner.Substring(1) }
+            if ($inner.EndsWith(']'))   { $inner = $inner.Substring(0, $inner.Length - 1) }
+            $inner = $inner.Trim()
+            if ($inner) {
+                if ($JsonFirstBatch -and -not $JsonFirstBatch.Value) { $JsonWriter.Write(',') }
+                $JsonWriter.Write($inner)
+                if ($JsonFirstBatch) { $JsonFirstBatch.Value = $false }
+            }
+        }
+        if ($CsvFile) {
+            if ($CsvHeaderWritten -and -not $CsvHeaderWritten.Value) {
+                $permissions | Export-Csv -Path $CsvFile -NoTypeInformation -Force
+                $CsvHeaderWritten.Value = $true
+            } else {
+                $permissions | Export-Csv -Path $CsvFile -NoTypeInformation -Append
+            }
+        }
+        $nsTotalCount += $permissions.Count
+        $permissions.Clear()
+    }
 
     # Set of tokens matched in the tokenData walk below. HashSet[string] gives
     # O(1) Contains() in the per-ACE switch instead of O(N) -in / .token scans.
@@ -2056,8 +2120,18 @@ Function Get-PermissionsByNamespace()
                 }    
             }
         }
+
+        # Flush per token when buffer reaches threshold.
+        if (($JsonWriter -or $CsvFile) -and $permissions.Count -ge $bufferLimit) {
+            . $flushBuffer
+        }
     }        
 
+    # Final flush, then return streamed count or legacy in-memory list.
+    if ($JsonWriter -or $CsvFile) {
+        . $flushBuffer
+        return $nsTotalCount
+    }
     return $permissions
 }
               

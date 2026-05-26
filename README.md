@@ -2,7 +2,7 @@
 title: ADO Permissions Output
 description: Automated extraction and reporting of Azure DevOps security permissions by namespace, group, and user
 author: Scott Kissel
-ms.date: 2026-03-31
+ms.date: 2026-05-26
 ms.topic: reference
 ---
 
@@ -355,6 +355,18 @@ human-readable names inline during extraction. This means:
 - Pipeline logs show real names as progress happens
 - Each namespace has dedicated token-matching logic in the `Get-PermissionsByNamespace`
   switch statement
+
+### Memory and Streaming Behavior
+
+- Permissions extraction now uses bounded batch streaming in
+  `Get-PermissionsByNamespace` for JSON/CSV output. Rows are written in batches,
+  then the in-memory batch buffer is cleared.
+- Membership extraction uses the same bounded batch pattern in
+  `Get-GroupMembershipReport`.
+- Matching and token resolution are still performed in memory as before; only
+  output buffering strategy changed.
+- This design prevents out-of-memory failures caused by a single large namespace
+  or project accumulating all output rows before serialization.
 
 ### Supported Security Namespaces
 

@@ -3,6 +3,33 @@ title: Changelog
 description: Version history and notable changes for ADO Permissions Output
 ---
 
+## v1.1.4 (2026-05-26)
+
+### Fixed
+
+* **Permissions extract OOM on large single namespaces (notably Git Repositories).**
+  Prior fixes streamed data per namespace at the caller, but a single namespace could
+  still allocate a massive in-memory list before returning. `Get-PermissionsByNamespace`
+  now uses a bounded in-function buffer and flushes batches directly to JSON/CSV,
+  clearing the buffer each cycle. This keeps working-set growth bounded even when one
+  namespace has very high ACE volume.
+
+* **Membership extract OOM on large projects with deep group expansion.**
+  `Get-GroupMembershipReport` in `ProjectAndGroup.psm1` now uses the same bounded
+  batch streaming pattern per project, writing partial JSON/CSV batches and clearing
+  the buffer during processing instead of accumulating all rows before final write.
+
+### Changed
+
+* **Streaming write path moved to the producer level.** Permission-row serialization
+  now happens inside `Get-PermissionsByNamespace` (producer) instead of after namespace
+  return in `Get-SecuritybyGroupByNamespace` (consumer). This preserves existing
+  matching/decoding behavior while changing memory strategy only.
+
+* **Documentation updated for memory behavior and runtime characteristics.** README
+  and changelog now describe bounded batch streaming for both permissions and
+  membership extraction paths.
+
 ## v1.1.3 (2026-05-11)
 
 ### Fixed
@@ -49,10 +76,9 @@ description: Version history and notable changes for ADO Permissions Output
   descriptor `subjectlookup` POSTs and (with `-recurseAADGroups True`)
   recursive `Contribution/HierarchyQuery` POSTs per nested AAD group. ADO
   graph endpoints throttle per-PAT, so naive `ForEach-Object -Parallel`
-  will hit 429s and net little or no gain. Planned remediation in v1.1.4:
-  batch `subjectlookup` POSTs (the API accepts an array of `lookupKeys`)
-  and add cross-project membership / subject caches so org-level groups
-  are resolved once per run instead of once per project.
+  will hit 429s and net little or no gain. v1.1.4 added bounded batch
+  streaming to remove memory spikes, but API call volume (especially nested
+  AAD recursion and subject lookups) remains the dominant runtime factor.
 
 ## v1.1.2 (2026-05-07)
 
