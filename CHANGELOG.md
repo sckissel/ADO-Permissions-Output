@@ -255,7 +255,7 @@ description: Version history and notable changes for ADO Permissions Output
 ### Fixed
 
 * Support comma-separated project names in the `-projectName` / `ProjectName`
-  parameter. Previously, supplying a value such as `"corp-ado-001, management-ado-001"`
+  parameter. Previously, supplying a value such as `"project-a, project-b"`
   produced empty `Security/` and `RawData/` folders because the filter used `-eq`
   against the full string. The filter now splits on commas, trims whitespace, and
   matches any project in the resulting list. Affects `Get-SecuritybyGroupByNamespace`
